@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "win32": {
+      "command": "dsh-cua-server"
+    }
+  }
+}

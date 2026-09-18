@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 本机运行产物与备份（绝不入库）
+*.log
+*.jsonl
+*.bak*
+target_state.json
+captured/
+playwright-mcp/
+
+# 密钥与凭据（双保险：本来就不该出现在仓库目录里）
+.credentials*
+*credentials*.yaml
+.env
+
+# 编辑器
+.vscode/
+.idea/

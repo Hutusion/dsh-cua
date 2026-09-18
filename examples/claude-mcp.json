@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "win32": {
+      "command": "uvx",
+      "args": ["dsh-cua"]
+    }
+  }
+}

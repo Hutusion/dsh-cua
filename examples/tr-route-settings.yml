@@ -1,0 +1,26 @@
+# 视觉路线声明示例：dsh 想让模型「看」到截图，路由必须声明 image 模态。
+# 放进 ~/.dsh/settings.yaml（热加载）。密钥本身放 ~/.dsh/.credentials.yaml，
+# 这里只放 apiKeyEnv 引用——不要把真实 key 写进任何文件。
+agent-default-model:
+  provider: tokenrhythm
+  model: deepseek-flash      # 必须是实际支持视觉的模型 id
+  reasoningEffort: max
+
+llm-pi-ai:
+  providers:
+    tokenrhythm:
+      displayName: TokenRhythm
+      apiKeyEnv: TOKENRHYTHM_API_KEY
+      api: openai-completions
+      baseURL: https://tokenrhythm.studio/v1
+      compat:
+        thinkingFormat: deepseek
+      models:
+        - id: deepseek-flash
+          input: [text, image]
+          contextWindow: 1000000
+          maxTokens: 16384
+          reasoningEfforts:
+            off:
+            high: high
+            max: max

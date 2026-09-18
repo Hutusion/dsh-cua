@@ -1,0 +1,9 @@
+# dsh 接线示例：加到 ~/.dsh/profiles/web/cordis.patch.yml 的 insert 列表。
+# 注意 serverName 必须叫 "win32"——computer-use skill 的工具名约定是 mcp__win32__*。
+- id: mcp-win32
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: win32
+    transport: stdio
+    command: uvx
+    args: [dsh-cua]
