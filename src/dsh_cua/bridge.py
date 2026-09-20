@@ -420,6 +420,41 @@ def _pixels_to_png(pixels, w2, h2, crop=None):
     buf = BytesIO(); img.save(buf, format="PNG"); result = buf.getvalue(); buf.close()
     return result
 
+
+def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
+                           image_format: str = "jpeg", quality: int = 80,
+                           max_dim: int = 0):
+    """Encode BGRA pixels -> (data, scale).
+
+    JPEG exists here because a screenshot is the single most expensive thing an
+    agent can put in a conversation: a 1080p PNG runs 1-4 MB, and once it is
+    base64'd into a request body it counts against the provider's 32 MiB cap.
+    Measured 2026-09-19: JPEG q80 is ~6-10x smaller than PNG for the same
+    pixels, which is what keeps long CUA sessions under that cap.
+
+    `scale` multiplies IMAGE pixels to reach the pixels of the un-downscaled
+    frame, i.e. the screen coordinates `click()` wants. It is exactly 1.0 when
+    `max_dim` does not shrink the image, so the invariant this module is built
+    on — image pixel (0,0) == the click (0,0) — holds unless a caller opts into
+    downscaling, and even then the factor is reported rather than assumed.
+    """
+    from PIL import Image
+    img = Image.frombuffer("RGBA", (w2, h2), bytes(pixels), "raw", "BGRA", 0, 1).convert("RGB")
+    if crop is not None:
+        img = img.crop(crop)
+    scale = 1.0
+    if max_dim and max(img.size) > max_dim:
+        scale = max(img.size) / float(max_dim)
+        img = img.resize((max(1, int(round(img.width / scale))),
+                          max(1, int(round(img.height / scale)))), Image.LANCZOS)
+    buf = BytesIO()
+    if image_format == "jpeg":
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+    else:
+        img.save(buf, format="PNG")
+    data = buf.getvalue(); buf.close()
+    return data, scale
+
 def capture_window(hwnd: int, client_only: bool = True):
     """Capture a window to PNG bytes -> (png_bytes, method, bounds).
 
@@ -429,12 +464,31 @@ def capture_window(hwnd: int, client_only: bool = True):
     7px-per-side trap that produced a wrong click on 2026-09-18. ZCode does the same
     when it crops a window out of a full-screen grab and returns the crop bounds
     alongside the image, so the mapping is explicit rather than assumed.
+
+    PNG is kept as this function's format for callers that compare pixels; new code
+    that only needs to *look* at the window should call `capture_window_image`, whose
+    JPEG default is what keeps request bodies small.
     """
+    data, method, bounds, _scale = _capture_window_encoded(hwnd, client_only, "png")
+    return data, method, bounds
+
+
+def capture_window_image(hwnd: int, client_only: bool = True, image_format: str = "jpeg",
+                         quality: int = 80, max_dim: int = 0):
+    """Capture a window with an explicit encoder -> (data, method, bounds, scale).
+
+    See `_pixels_to_image_bytes` for why JPEG is the default and what `scale` means.
+    """
+    return _capture_window_encoded(hwnd, client_only, image_format, quality, max_dim)
+
+
+def _capture_window_encoded(hwnd: int, client_only: bool = True, image_format: str = "png",
+                            quality: int = 80, max_dim: int = 0):
     h = w.HWND(hwnd)
     r = RECT()
-    if not user32.GetWindowRect(h, byref(r)): return None, None, None
+    if not user32.GetWindowRect(h, byref(r)): return None, None, None, 1.0
     w2 = r.right - r.left; h2 = r.bottom - r.top
-    if w2 <= 0 or h2 <= 0: return None, None, None
+    if w2 <= 0 or h2 <= 0: return None, None, None, 1.0
 
     # Where the client area sits inside the captured bitmap, and where it sits on screen.
     origin = POINT(0, 0)
@@ -451,17 +505,19 @@ def capture_window(hwnd: int, client_only: bool = True):
             crop = (left, top, right, bottom)
             bounds = (r.left + left, r.top + top, right - left, bottom - top)
 
-    last = (None, None, None)
+    last = (None, None, None, 1.0)
     for method in ("printwindow", "bitblt"):
         got = _capture_pixels(h, w2, h2, method)
         if got is None: continue
         pixels, _ = got
         try:
-            png = _pixels_to_png(pixels, w2, h2, crop)
+            data, scale = _pixels_to_image_bytes(pixels, w2, h2, crop,
+                                                 image_format=image_format,
+                                                 quality=quality, max_dim=max_dim)
         except ImportError:
-            png = None
-        if png is None: continue
-        last = (png, method, bounds)
+            data, scale = None, 1.0
+        if data is None: continue
+        last = (data, method, bounds, scale)
         if not _pixels_blank(pixels, w2, h2):
             return last
     return last

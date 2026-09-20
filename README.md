@@ -67,7 +67,7 @@ cp -r skill/computer-use ~/.dsh/skills/
 
 | 级别 | 覆盖操作 | 门 |
 |---|---|---|
-| 只读 | 观测类 11 个工具 | 不进门，随时可调 |
+| 只读 | 观测类 12 个工具 | 不进门，随时可调 |
 | 软门 | 元素动作、PostMessage 打字、剪贴板写、启动应用 | 跨 agent 互斥锁（named mutex，多进程自动串行） |
 | 硬门 | 裸点击、全局热键 | 互斥锁 + `GetLastInputInfo` 人机让行：用户最近有输入就等待，超时则拒绝 `user-active` 而非抢光标 |
 

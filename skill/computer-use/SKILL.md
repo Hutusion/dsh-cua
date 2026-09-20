@@ -53,12 +53,15 @@ Read it like that: `{index} {indent}{role} {name}{Value: ...}{(state)}`. Indenta
 re-observing is cheap. That is the point of the tool: **a full tree is ~700 characters, a screenshot
 is ~2.4 MB.**
 
-**To act by index you need `disable_diff=true`.** A diff carries no indices for unchanged elements,
-so you cannot address them from it. Take a full render when you intend to act.
+**Indexes are positional: a number is only valid against the shot that printed it.**
+`~` and `+` lines carry the CURRENT tree's index, so you may act on those directly. Unchanged
+lines carry no index — to reach one, take a full render with `disable_diff=true`. An index read
+from an older shot is not a durable handle: if the window may have changed since, re-observe
+before acting, or you will press whatever element now holds that position.
 
 `shot_key` is the window the diff baseline belongs to — the baseline lives in the server and outlives
-your session, so check it when the answer matters. `next_index` is the index the next new element
-would receive; indices are never reused.
+your session, so check it when the answer matters. (`next_index` is a legacy field with no
+addressing meaning.)
 
 ### `mcp__win32__tool_find_elements` — when you know what you want
 

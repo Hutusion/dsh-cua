@@ -588,13 +588,19 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
 
 
 def click_element_at_point(screen_x: int, screen_y: int, *,
-                           expect_pid: Optional[int] = None) -> dict:
+                           expect_pid: Optional[int] = None,
+                           dry_run: bool = False) -> dict:
     """ZCode's level 2: resolve a point to an element, then act on the ELEMENT.
 
     This is why the coordinates are only an input: the action lands on whatever element
     owns the point, so the window never has to be raised and z-order never enters into
     it. When `expect_pid` is given the element must belong to that process, which is the
     equivalent of ZCode's `assertClickElementOwnerPid`.
+
+    `dry_run` has to be threaded through here, not only through the raw-input fallback:
+    this element path is the DEFAULT, so a "preview" that silently pressed the button
+    would make look-before-you-leap unusable exactly where it matters most (a
+    save/discard dialog).
     """
     found = element_at_point(screen_x, screen_y)
     if not found.get("ok"):
@@ -612,10 +618,11 @@ def click_element_at_point(screen_x: int, screen_y: int, *,
                 "error": (f"the element at ({screen_x},{screen_y}) "
                           f"({found.get('name')!r}, {found.get('role')}) is not invokable; "
                           f"it supports {found.get('actions')}")}
-    acted = element_action(found["ref"], "press")
+    acted = element_action(found["ref"], "press", dry_run=dry_run)
     if acted.get("ok"):
         acted["method"] = "ax_press"
         acted["element"] = found
+        acted["dry_run"] = dry_run
         return acted
     acted["method"] = None
     acted["element"] = found
@@ -639,13 +646,21 @@ def click_element_at_point(screen_x: int, screen_y: int, *,
 #   state  = (disabled, settable, focused), only the ones that are true
 #
 # Diff rules, from ZCode's `SkyshotDiffer`:
-#   * a line's IDENTITY is its signature. An index is assigned in the full render and is
-#     STABLE across shots; genuinely new elements get indices continuing past the previous
-#     maximum, so an index never silently changes meaning.
-#   * unchanged                  -> omitted entirely
-#   * same signature, new text   -> "~ {depth}\t{prev_index} {text}"
-#   * no previous signature      -> "+ {depth}\t{new_index} {text}"
+#   * a line's IDENTITY is its signature. An index is POSITIONAL: it is assigned by the
+#     walk order of the shot it belongs to, so it can shift when the tree changes — it
+#     is not a durable handle. What is durable is the signature, which is why the diff
+#     matches on it.
+#   * unchanged                  -> omitted entirely (carries no index)
+#   * same signature, new text   -> "~ {depth}\t{index} {text}"   (index = this shot's)
+#   * no previous signature      -> "+ {depth}\t{index} {text}"   (index = this shot's)
 #   * disappeared                -> one line: "Removed element IDs: 3-7, 12"
+#
+# The numbers on "~" and "+" lines are the CURRENT tree's indices, so an agent may act
+# on them directly. They used to come from a separate "next new element" counter, which
+# meant the documented loop — read the diff, act on the number it shows — pressed
+# whatever element held that positional index (measured 2026-09-20). Because indices are
+# positional, an index read from an older shot must be re-checked against a fresh one
+# when the tree may have changed.
 #
 # The signature is ZCode's `depth|role|name` PLUS the automation id when the element has
 # one. ZCode's three-field form is not unique among siblings, and the collision is not
@@ -710,18 +725,37 @@ def _node_of(el, *, include_values: bool) -> dict:
     return node
 
 
+_CONTROL_CHARS = {chr(c): f"\\x{c:02x}" for c in range(0x20)}
+_CONTROL_CHARS["\n"] = "\\n"
+_CONTROL_CHARS["\r"] = "\\r"
+_CONTROL_CHARS["\t"] = "\\t"
+
+
+def _escape(value) -> str:
+    """Flatten control characters in an application-supplied string.
+
+    Role, name, value and automation id all come from the TARGET application. The tree
+    is a line-oriented text format whose leading number is the index an agent will act
+    on, so an app that puts "\\n+ 1\\t5 button OK" in a window title can forge a line
+    that looks like a real element — and with the positional index model it can also
+    point at one. Escaping keeps every element on exactly one line, where its index is
+    the one this walker assigned.
+    """
+    return "".join(_CONTROL_CHARS.get(ch, ch) for ch in str(value))
+
+
 def _line_text(node: dict, depth: int) -> str:
-    parts = [node["role"]]
+    parts = [_escape(node["role"])]
     if node["name"]:
-        parts.append(node["name"])
+        parts.append(_escape(node["name"]))
     out = "\t" * depth + " ".join(parts)
     attrs = []
     if node["value"]:
-        attrs.append(f"Value: {node['value']}")
+        attrs.append(f"Value: {_escape(node['value'])}")
     if not node["name"] and node["automation_id"]:
         # Only when there is no name: for named elements the name is the better handle,
         # and always emitting ids roughly doubles the text of a large tree.
-        attrs.append(f"id: {node['automation_id']}")
+        attrs.append(f"id: {_escape(node['automation_id'])}")
     if attrs:
         out += " " + ", ".join(attrs)
     state = []
@@ -841,18 +875,22 @@ class SkyshotDiffer:
                     "is_diff": False, "lines": lines}
 
         prev_by_sig = {l["sig"]: l for l in prev}
-        next_index = self._prev_max.get(key, 0) + 1
         out = [header] if header else []
         out.append(SKYSHOT_DIFF_HEADER)
         current_sigs = set()
         for l in lines:
             current_sigs.add(l["sig"])
             p = prev_by_sig.get(l["sig"])
+            # Print the CURRENT tree index, never a separate "new element" counter.
+            # The index an agent reads is resolved by element_action_at against this
+            # same shot's records, so a second numbering scheme here is not cosmetic:
+            # it makes the documented loop (read the diff, act on the number it shows)
+            # press whatever element happens to hold that positional index. Measured
+            # 2026-09-20: the diff printed 1 while index 1 was a different control.
             if p is None:
-                out.append(f"+ {l['depth']}\t{next_index} {l['text']}")
-                next_index += 1
+                out.append(f"+ {l['depth']}\t{l['index']} {l['text']}")
             elif p["text"] != l["text"]:
-                out.append(f"~ {l['depth']}\t{p['index']} {l['text']}")
+                out.append(f"~ {l['depth']}\t{l['index']} {l['text']}")
         removed = sorted(l["index"] for l in prev if l["sig"] not in current_sigs)
         if removed:
             out.append(f"Removed element IDs: {_summarize_ranges(removed)}")
@@ -867,7 +905,9 @@ class SkyshotDiffer:
                        f"sibling, so the lines above may name the wrong index for them; "
                        f"use disable_diff=true for exact indices.")
         self._prev[key] = lines
-        self._prev_max[key] = next_index - 1
+        # Highest index this shot handed out — the only thing `next_index()` needs now
+        # that the diff prints real indices instead of a separate counter.
+        self._prev_max[key] = lines[-1]["index"] if lines else 0
         return {"text": "\n".join(out), "is_diff": True, "lines": lines}
 
 
@@ -921,9 +961,9 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
         "text": rendered["text"],
         "is_diff": rendered["is_diff"],
         "node_count": len(records),
-        # The index the next genuinely-new element would receive. Indices already handed
-        # out are never reused, so this is also the boundary above which every index is
-        # new — useful when reading a diff, where unchanged lines carry no index.
+        # Kept for compatibility only: the diff no longer uses a separate "new element"
+        # counter (it prints this shot's real indices), and positional indices ARE
+        # reused across shots, so this is not a boundary you can act above.
         "next_index": _differ.next_index(key),
         "truncated": truncated,
         "chars": len(rendered["text"]),

@@ -5,9 +5,9 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .bridge import (
-    capture_window, click, cursor_pos, dpi_awareness, find_window, get_window_rect,
-    list_displays, list_windows, require_verified_frame_pixels, send_alt_key,
-    send_hotkey, type_text,
+    capture_window, capture_window_image, click, cursor_pos, dpi_awareness, find_window,
+    get_window_rect, list_displays, list_windows, require_verified_frame_pixels,
+    send_alt_key, send_hotkey, type_text,
     client_to_screen as bridge_client_to_screen,
 )
 from . import arbiter, uia
@@ -40,8 +40,10 @@ def tool_find_window(title: str = "") -> dict[str, Any]:
     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 5)
     return {"success": True, "hwnd": hwnd, "title": buf.value, **rect}
 
-@mcp.tool(description="Capture a screenshot of a window as PNG. Provide hwnd or title substring. Crops to the window's CLIENT area by default, so image pixel (0,0) is the same point click_at calls (0,0) — no frame offset to guess. Returns bounds = the screen rect (x,y,width,height) the image maps to. Also reports dpi_verified; when false, image pixels and input coordinates cannot be safely paired. Read-only — no input injection, no focus change.")
-def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", client_only: bool = True) -> dict[str, Any]:
+@mcp.tool(description="Capture a window screenshot and SAVE IT TO A FILE. Provide hwnd or title substring. Crops to the window's CLIENT area by default, so image pixel (0,0) is the same point click_at calls (0,0) — no frame offset to guess. Returns bounds = the screen rect (x,y,width,height) the image maps to, plus `scale` (multiply image pixels by it to get screen pixels; 1.0 unless you asked for downscaling). Also reports dpi_verified; when false, image pixels and input coordinates cannot be safely paired. Defaults to JPEG q80 — a 1080p shot is ~6-10x smaller than PNG, which is what keeps a long session's request body under the provider's 32 MiB cap. The bytes are NOT inlined as base64 by default (that costs ~12,500 tokens per shot as text); read the saved_path with read_image instead, which attaches the same picture for ~50 tokens. Pass include_data_uri=true only when a caller genuinely cannot read a file. Read-only — no input injection, no focus change.")
+def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", client_only: bool = True,
+                        image_format: str = "jpeg", quality: int = 80, max_dim: int = 0,
+                        include_data_uri: bool = False) -> dict[str, Any]:
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
@@ -49,14 +51,37 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
     rect = get_window_rect(hwnd)
     dpi_gate = require_verified_frame_pixels("capture_window")
     t0 = time.perf_counter()
-    png, method, bounds = capture_window(hwnd, client_only=client_only)
+    data, method, bounds, scale = capture_window_image(
+        hwnd, client_only=client_only, image_format=image_format,
+        quality=quality, max_dim=max_dim)
     t1 = time.perf_counter()
-    if png is None: return {"success": False, "error": "Failed to capture window"}
+    if data is None: return {"success": False, "error": "Failed to capture window"}
+
+    # A shot nobody can look at is useless, and inline base64 is the expensive way to
+    # make it lookable. So when the caller gives no path and does not ask for the data
+    # URI, land it in a temp dir and hand back the path.
+    ext = "jpg" if image_format == "jpeg" else "png"
+    if not save_path and not include_data_uri:
+        shots = os.path.join(os.environ.get("TEMP", "."), "win32_mcp_shots")
+        os.makedirs(shots, exist_ok=True)
+        # Nothing else prunes this directory: dsh's attachment store has no GC either,
+        # so a default save path that never cleans up becomes an unmanaged pile. Drop
+        # yesterday's shots on the way in — a caller that needed one has already copied
+        # its bytes into an attachment by then.
+        try:
+            cutoff = time.time() - 86400
+            for name in os.listdir(shots):
+                fp = os.path.join(shots, name)
+                if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+        except OSError:
+            pass
+        save_path = os.path.join(shots, f"win{hwnd}_{int(time.time()*1000)}.{ext}")
     saved = ""
     if save_path:
-        with open(save_path, "wb") as f: f.write(png)
+        with open(save_path, "wb") as f: f.write(data)
         saved = save_path
-    b64 = base64.b64encode(png).decode("utf-8")
+
     out = {"success": True, "hwnd": hwnd,
            # Image dimensions and the screen rect they map to. `bounds` is what makes
            # image pixels and click_at coordinates provably the same space.
@@ -66,9 +91,16 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
            "window_rect": {k: rect[k] for k in ("x", "y", "width", "height")},
            "client_origin_on_screen": rect["client_origin_on_screen"],
            "dpi_verified": dpi_gate is None,
-           "size_bytes": len(png), "capture_time_ms": round((t1-t0)*1000, 1),
-           "capture_method": method, "saved_path": saved,
-           "data_uri": f"data:image/png;base64,{b64}"}
+           "image_format": image_format, "quality": quality if image_format == "jpeg" else None,
+           "scale": round(scale, 4),
+           "size_bytes": len(data), "capture_time_ms": round((t1-t0)*1000, 1),
+           "capture_method": method, "saved_path": saved}
+    if scale != 1.0:
+        out["scale_note"] = ("image is downscaled: multiply image pixel coordinates by "
+                             "`scale` before passing them to click_at")
+    if include_data_uri:
+        mime = "image/jpeg" if image_format == "jpeg" else "image/png"
+        out["data_uri"] = f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}"
     if dpi_gate is not None:
         out["dpi_warning"] = dpi_gate["error"]
         out["dpi"] = dpi_gate["dpi"]
@@ -115,14 +147,27 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
                              "reason": "client_to_screen_failed"})
         else:
             pid = window_pid(hwnd)
-            got = uia.click_element_at_point(screen[0], screen[1], expect_pid=pid)
+            got = uia.click_element_at_point(screen[0], screen[1], expect_pid=pid,
+                                             dry_run=dry_run)
             attempts.append({"method": "ax_press", "ok": bool(got.get("ok")),
                              "reason": got.get("reason"), "error": got.get("error"),
                              "screen": {"x": screen[0], "y": screen[1]},
                              "element": got.get("element")})
             if got.get("ok"):
                 return {"success": True, "hwnd": hwnd, "x": x, "y": y,
-                        "method": "ax_press", "focus_stolen": False,
+                        "method": "ax_press", "focus_stolen": False, "dry_run": dry_run,
+                        "element": got.get("element"),
+                        "attempts": attempts,
+                        "time_ms": round((time.perf_counter()-t0)*1000, 1)}
+            if dry_run and got.get("reason") == "dry_run":
+                # A preview is a RESULT, not a failure: reporting the element the element
+                # path WOULD have pressed is the entire value of dry_run. Falling through
+                # to the raw path here answered with method="raw_event" and buried the
+                # element inside `attempts`, which reads as "the element path did not
+                # work" when in fact it resolved the right control and stopped.
+                return {"success": True, "hwnd": hwnd, "x": x, "y": y,
+                        "method": "ax_press", "focus_stolen": False, "dry_run": True,
+                        "action_sent": False, "would_press": True,
                         "element": got.get("element"),
                         "attempts": attempts,
                         "time_ms": round((time.perf_counter()-t0)*1000, 1)}
@@ -184,7 +229,7 @@ async def tool_read_element(ref: str) -> dict[str, Any]:
         return {"success": False, **res}
     return {"success": True, **res}
 
-@mcp.tool(description="Read a window's UI as a compact TEXT tree instead of a screenshot — far cheaper than an image, and it names elements a hit-test cannot reach (e.g. an input inside a Chromium page, which element_at_point reports only as the enclosing 'document'). Each line is '{index} {indent}{role} {name}{Value: ...}{(state)}'. Every shot after the first is a DIFF against the previous one: unchanged lines are omitted, '~' marks a changed line, '+' an added one, and removed indices are summarised as ranges. So a second call is usually a few lines, not the whole tree — an unchanged window costs about 100 characters. IMPORTANT: because unchanged lines are omitted, a DIFF CARRIES NO INDEXES FOR THEM, so you cannot act from a diff. To act by index, call with disable_diff=true to get a full render with fresh indexes. The result includes shot_key (the window the diff baseline belongs to — the baseline lives server-side and outlives your session, so this is how you confirm it was taken against the window you meant) and next_index (the index the next new element would receive; indexes are never reused). Pass include_offscreen=true to include elements that are scrolled out or hidden. NOTE: this reads element VALUES, so the text can contain whatever is on screen in that window. Read-only — no input injection, no focus change; safe to call while the user works.")
+@mcp.tool(description="Read a window's UI as a compact TEXT tree instead of a screenshot — far cheaper than an image, and it names elements a hit-test cannot reach (e.g. an input inside a Chromium page, which element_at_point reports only as the enclosing 'document'). Each line is '{index} {indent}{role} {name}{Value: ...}{(state)}'. Every shot after the first is a DIFF against the previous one: unchanged lines are omitted, '~' marks a changed line, '+' an added one, and removed indices are summarised as ranges. So a second call is usually a few lines, not the whole tree — an unchanged window costs about 100 characters. INDEXES ARE POSITIONAL: each shot numbers the tree it just walked, so a number is only valid against the shot that printed it. '~' and '+' lines carry THIS shot's index and may be acted on; unchanged lines carry no index, so reaching one needs disable_diff=true for a full render. An index read from an older shot is not a durable handle — re-check it with a fresh shot before acting if the window may have changed. The result includes shot_key (the window the diff baseline belongs to — the baseline lives server-side and outlives your session, so this is how you confirm it was taken against the window you meant). Pass include_offscreen=true to include elements that are scrolled out or hidden. NOTE: this reads element VALUES, so the text can contain whatever is on screen in that window. Read-only — no input injection, no focus change; safe to call while the user works.")
 async def tool_skyshot(hwnd: int = 0, title: str = "", disable_diff: bool = False,
                        include_offscreen: bool = False, include_values: bool = True,
                        max_nodes: int = 800, max_depth: int = 30) -> dict[str, Any]:
@@ -244,14 +289,21 @@ def tool_clipboard_write(text: str = "") -> dict[str, Any]:
         return {"success": False, "arbiter": {k: v for k, v in gate.items() if k != "release"},
                 "error": gate.get("error")}
     try:
-        import pyperclip
-    except Exception as exc:
-        return {"success": False, "error": f"clipboard backend unavailable: {exc}"}
-    try:
-        pyperclip.copy(text)
-    except Exception as exc:
-        return {"success": False, "error": f"clipboard write failed: {exc}"}
-    return {"success": True, "length": len(text)}
+        try:
+            import pyperclip
+        except Exception as exc:
+            return {"success": False, "error": f"clipboard backend unavailable: {exc}"}
+        try:
+            pyperclip.copy(text)
+        except Exception as exc:
+            return {"success": False, "error": f"clipboard write failed: {exc}"}
+        return {"success": True, "length": len(text)}
+    finally:
+        # The gate is process-wide: every other agent session's mutating call waits on
+        # it. Returning without releasing wedged them all until the server restarted,
+        # and because sync tools run on the event-loop thread the holder never exits,
+        # so the OS never handed the mutex on as abandoned.
+        gate["release"]()
 
 @mcp.tool(description="Open a file, folder, or URI with the shell's default handler — like double-clicking it in Explorer: an .exe path, a document, or a URL. MUTATING (soft): serialized across agent sessions; the launched app may take focus.")
 def tool_open_application(target: str) -> dict[str, Any]:
