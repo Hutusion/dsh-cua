@@ -40,7 +40,14 @@ jobs:
       - name: Install the package (validates pyproject, deps, entry point)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install .
+          # ".[test]", not "." — tests/check-workflow-shell.py parses the workflow YAML and
+          # therefore needs PyYAML, which pyproject declares as the `test` extra.
+          #
+          # Run #5 failed because that import was undeclared: it resolved on a machine that
+          # happened to have PyYAML and died on the runner in 0 seconds with no output.
+          # Installing the extra is what makes the runner's dependency set match the one
+          # the tests are written against.
+          python -m pip install ".[test]"
 
       - name: Entry point resolves
         run: |
@@ -53,22 +60,56 @@ jobs:
       - name: Byte-compile every module
         run: python -m compileall -q src
 
+      - name: Environment facts (diagnostic; never fails the job)
+        shell: pwsh
+        run: |
+          # Every fact a runner-only failure needs to be explained, published where it can
+          # be read from outside: the job summary is rendered on the public run page,
+          # whereas the job log endpoint needs authentication (measured: 403 unauthenticated).
+          $lines = @(
+            "### environment facts",
+            "",
+            "| fact | value |",
+            "| --- | --- |",
+            "| python -V | $((python -V 2>&1) -join ' ') |",
+            "| sys.executable | $(python -c 'import sys; print(sys.executable)') |",
+            "| PyYAML module | $(python -c 'import importlib.util as u; s=u.find_spec("yaml"); print(s.origin if s else "MISSING")') |",
+            "| pwsh version | $($PSVersionTable.PSVersion) |",
+            "| pwsh path | $((Get-Command pwsh -ErrorAction SilentlyContinue).Source) |",
+            "| runner image | $env:RUNNER_OS / $env:ImageOS |"
+          )
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $lines | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
+
       - name: Workflow shell blocks parse
         run: python tests/check-workflow-shell.py
 
       - name: Desktop-free verification suite
         shell: pwsh
         run: |
-          # Run the suite and re-emit its output as a check annotation on failure.
-          # Why the shell does it rather than the test: the job-log endpoint requires
-          # authentication (measured: 403 unauthenticated), so a red run is otherwise
-          # opaque from outside. Annotations are readable through the public API, so
-          # surfacing the output here makes a CI-only failure diagnosable without a token.
+          # Run the suite and publish its output on failure, through the two channels that
+          # need no token: the job summary (full text, on the public run page) and check
+          # annotations (via the public API). The job log itself is 403 unauthenticated, so
+          # without this a red run is opaque from outside.
+          #
+          # Note on exit codes: GitHub runs a `shell: pwsh` step as
+          # `pwsh -command ". '<temp>.ps1'"`, and in that shape every non-zero exit surfaces
+          # as 1 (measured 2026-09-25 on PowerShell 7.6.6: exit 2 / exit 3 / cmd /c exit 5 /
+          # sys.exit(7) all became 1, while -File kept the code). So `$code` below cannot be
+          # trusted as a diagnosis — the output is the diagnosis, which is why it is published.
           python tests/ci-desktop-free.py *> ci-output.txt
           $code = $LASTEXITCODE
           Get-Content ci-output.txt | ForEach-Object { Write-Output $_ }
 
           if ($code -ne 0) {
+            if ($env:GITHUB_STEP_SUMMARY) {
+              "### ci-desktop-free: FAIL" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+              "``````text" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+              Get-Content ci-output.txt | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+              "``````" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            }
             $flat = (Get-Content ci-output.txt -Raw) -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
             $i = 0
             foreach ($m in [regex]::Matches($flat, '.{1,20000}')) {

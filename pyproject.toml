@@ -20,12 +20,30 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "mcp>=1.2",
+  # Upper bound is load-bearing, not decorative. Measured 2026-09-25: a clean
+  # `pip install .` resolves mcp to 2.x, where FastMCP was renamed to MCPServer and
+  # `from mcp.server.fastmcp import FastMCP` (src/dsh_cua/server.py:5) raises
+  # ModuleNotFoundError. The working machine happened to have 1.28.1, so the desktop-free
+  # suite died on the runner at import — with an unreadable log, every run. Migrating to
+  # the 2.x API is its own piece of work; until then the ceiling keeps installs working.
+  "mcp>=1.2,<2",
   "pywinauto>=0.6.9",
   "comtypes>=1.4",
   "pyperclip>=1.9",
   "Pillow>=10",
 ]
+
+# Test/CI-only dependencies. PyYAML lives here rather than in `dependencies` because only
+# the workflow self-check (tests/check-workflow-shell.py) parses YAML — the shipped server
+# must not carry it. CI installs `.[test]`.
+#
+# Why this extra exists at all: the import was undeclared, so it resolved on a developer
+# machine that happened to have PyYAML and failed on the runner. That step exited non-zero
+# in 0 seconds with no output, and GitHub's pwsh wrapper normalizes every non-zero exit to
+# 1, so the code could not even be told apart from a genuine parse failure. One undeclared
+# import cost four CI runs. Declare test-only imports here.
+[project.optional-dependencies]
+test = ["pyyaml>=6"]
 
 [project.urls]
 Homepage = "https://github.com/Hutusion/dsh-cua"
