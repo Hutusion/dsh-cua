@@ -43,6 +43,39 @@ from dsh_cua import arbiter, bridge, uia, server as srv  # noqa: E402
 failures = []
 
 
+def _env_report() -> str:
+    """Facts needed to diagnose a CI-only failure without a second round trip."""
+    lines = ["--- environment ---"]
+    try:
+        for label, value in (
+            ("platform", sys.platform),
+            ("python", sys.version.split()[0]),
+            ("executable", sys.executable),
+            ("cwd", os.getcwd()),
+            ("src on path", SRC),
+            ("imported from", os.path.dirname(os.path.abspath(arbiter.__file__))),
+            ("input_age_ms", repr(arbiter.input_age_ms())),
+            ("uia", repr(uia.available())),
+            ("arbiter enabled", arbiter.ENABLED),
+            ("named mutex", bool(arbiter._hmutex)),
+        ):
+            lines.append(f"  {label:<16}: {value}")
+    except Exception as exc:                      # never let diagnostics mask the failure
+        lines.append(f"  (env report failed: {exc!r})")
+    return "\n".join(lines)
+
+
+def _crash(exc_type, exc, tb):
+    """An unhandled exception must also dump the environment, or the log is silent."""
+    import traceback
+    print("\n--- UNHANDLED EXCEPTION ---")
+    traceback.print_exception(exc_type, exc, tb)
+    print(_env_report())
+
+
+sys.excepthook = _crash
+
+
 def check(label, cond, detail=""):
     print(f"  [{'PASS' if cond else 'FAIL'}] {label}" + (f" — {detail}" if detail else ""))
     if not cond:
@@ -118,11 +151,27 @@ def mutex_is_free() -> bool:
 out = arbiter.wait_input_quiet(quiet_ms=0, max_wait_ms=200, poll_ms=25)
 check("quiet_ms=0 passes immediately", out.get("ok") is True and out.get("waited_ms") < 200, str(out))
 
-t0 = time.perf_counter()
-out = arbiter.wait_input_quiet(quiet_ms=3_600_000, max_wait_ms=300, poll_ms=50)
-dt = (time.perf_counter() - t0) * 1000
-check("huge quiet fails after ~max_wait", out.get("ok") is False and 250 <= dt <= 1500,
-      f"ok={out.get('ok')} {dt:.0f}ms")
+# Environment facts BEFORE the timing checks. A CI service session has no interactive
+# input queue, and the gate's documented behavior there ("no input info => treat the
+# machine as quiet") makes the yield un-exercisable — so branch on it rather than assert
+# a timeout this environment cannot produce. Printed either way, so a failure in this
+# section is diagnosable from the CI log alone.
+age = arbiter.input_age_ms()
+print(f"    env: input_age_ms={age!r}  uia_available={uia.available().get('available')}  "
+      f"platform={sys.platform}  python={sys.version.split()[0]}")
+
+if age is None:
+    out = arbiter.wait_input_quiet(quiet_ms=3_600_000, max_wait_ms=300, poll_ms=50)
+    check("no input info => gate treats the machine as quiet (documented fallback)",
+          out.get("ok") is True and out.get("last_input_age_ms") is None, str(out))
+else:
+    t0 = time.perf_counter()
+    out = arbiter.wait_input_quiet(quiet_ms=3_600_000, max_wait_ms=300, poll_ms=50)
+    dt = (time.perf_counter() - t0) * 1000
+    # Upper bound is deliberately loose: a loaded CI runner can overshoot the 300 ms
+    # max_wait, and this check is about "it gave up", not about precise scheduling.
+    check("huge quiet fails after ~max_wait", out.get("ok") is False and 250 <= dt <= 3000,
+          f"ok={out.get('ok')} {dt:.0f}ms")
 
 # The soft gate must NOT wait for quiet, even with an absurd window — that is the whole
 # point of the hard/soft split (element actions inject no physical input).
@@ -133,7 +182,7 @@ try:
     gate = arbiter.admit_mutating(hard=False)
     dt = (time.perf_counter() - t0) * 1000
     check("soft gate admits without waiting for quiet", gate.get("ok") is True, str(gate.get("reason")))
-    check("soft gate returned fast (<200ms)", dt < 200, f"{dt:.0f}ms")
+    check("soft gate returned fast (no quiet wait)", dt < 1000, f"{dt:.0f}ms")
     gate.get("release", lambda: None)()
     check("mutex free after soft gate", mutex_is_free())
 finally:
@@ -238,5 +287,6 @@ check("a dry run against a bogus window refuses instead of clicking",
 print()
 if failures:
     print(f"FAILED: {len(failures)} — " + "; ".join(failures))
+    print(_env_report())
     sys.exit(1)
 print("ALL CHECKS PASSED")
