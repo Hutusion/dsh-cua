@@ -65,12 +65,30 @@ def _env_report() -> str:
     return "\n".join(lines)
 
 
+def _gha_escape(text: str) -> str:
+    """Escape a workflow-command message (GitHub unescapes %0A/%0D/%25)."""
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _annotate(title: str, message: str) -> None:
+    """Emit a check annotation when running under GitHub Actions.
+
+    Why: the job-log endpoint requires authentication, so a red run is otherwise opaque
+    from outside — you can see THAT it failed but not why. Annotations are readable
+    through the public API, which makes a CI-only failure diagnosable without a token.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::error title={title}::{_gha_escape(message)}")
+
+
 def _crash(exc_type, exc, tb):
     """An unhandled exception must also dump the environment, or the log is silent."""
     import traceback
+    detail = "".join(traceback.format_exception(exc_type, exc, tb))
     print("\n--- UNHANDLED EXCEPTION ---")
-    traceback.print_exception(exc_type, exc, tb)
+    print(detail)
     print(_env_report())
+    _annotate("ci-desktop-free: unhandled exception", detail + "\n" + _env_report())
 
 
 sys.excepthook = _crash
@@ -288,5 +306,10 @@ print()
 if failures:
     print(f"FAILED: {len(failures)} — " + "; ".join(failures))
     print(_env_report())
+    # One annotation per failed check plus the environment, so a CI-only failure is
+    # readable through the public API without downloading the (auth-only) job logs.
+    for name in failures:
+        _annotate("ci-desktop-free", f"FAILED: {name}")
+    _annotate("ci-desktop-free: environment", _env_report())
     sys.exit(1)
 print("ALL CHECKS PASSED")
