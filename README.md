@@ -54,7 +54,7 @@ Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在*
 
 ## 安装
 
-需要 **Windows x64 + 交互式桌面会话 + Python ≥3.10**（或装好 uv 直接 uvx）。
+需要 **Windows x64 + 交互式桌面会话 + Python ≥3.10**。
 
 ```bash
 # 方式一：uvx 零安装（推荐）
@@ -62,18 +62,35 @@ uvx dsh-cua                      # 直接运行 stdio MCP server
 
 # 方式二：pip
 pip install dsh-cua
-dsh-cua-server
 
 # 方式三：从源码
 pip install git+https://github.com/Hutusion/dsh-cua.git
 ```
 
-> 方式一/二要求 `dsh-cua` 已发布到 PyPI。**若 `uvx`/`pip` 报 404，改用方式三 —— 它总是可用。**
-> 用源码方式时，接线里的 `command` 换成 `dsh-cua-server`（已装进 PATH）。
+三种方式装完后，**用 `python -m dsh_cua` 起服务**：
+
+```bash
+python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
+```
+
+> **为什么不写 `dsh-cua-server`**：pip 会把 console script 装进解释器的 `Scripts` 目录，
+> 而**那个目录不一定在 PATH 上** —— 实测 stock python.org 3.12 的 User 与 Machine PATH
+> 都不含它，于是 `pip install dsh-cua` 成功、`dsh-cua-server` 却报 command not found。
+> `python -m` 不需要任何 PATH 条目。console script 仍然提供，PATH 里有它时可用。
+>
+> 方式一/二要求包已发布到 PyPI。**若 `uvx`/`pip` 报 404，用方式三 —— 它总是可用。**
 
 ## 接线
 
-任何 MCP 客户端，把 server 命名为 **`win32`**（skill 的工具名约定是 `mcp__win32__*`）：
+任何 MCP 客户端，把 server 命名为 **`win32`**（skill 的工具名约定是 `mcp__win32__*`）。
+
+**`python -m`（不依赖 PATH，推荐）**：
+
+```json
+{ "mcpServers": { "win32": { "command": "python", "args": ["-m", "dsh_cua"] } } }
+```
+
+**`uvx`（PyPI 发布后）**：
 
 ```json
 { "mcpServers": { "win32": { "command": "uvx", "args": ["dsh-cua"] } } }
