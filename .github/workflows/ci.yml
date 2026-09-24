@@ -53,6 +53,9 @@ jobs:
       - name: Byte-compile every module
         run: python -m compileall -q src
 
+      - name: Workflow shell blocks parse
+        run: python tests/check-workflow-shell.py
+
       - name: Desktop-free verification suite
         shell: pwsh
         run: |
@@ -72,6 +75,6 @@ jobs:
               Write-Output "::error title=ci-output-$i::$($m.Value)"
               $i++
             }
-            Write-Output "::error title=ci-desktop-free::$($i annotation chunk(s) above; exit code $code)"
+            Write-Output ("::error title=ci-desktop-free::{0} annotation chunk(s) above; exit code {1}" -f $i, $code)
           }
           exit $code

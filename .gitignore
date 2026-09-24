@@ -14,6 +14,8 @@ venv/
 target_state.json
 captured/
 playwright-mcp/
+# 由 ci.yml 的测试步骤写出（本机复跑也会生成）
+ci-output.txt
 
 # 密钥与凭据（双保险：本来就不该出现在仓库目录里）
 .credentials*
