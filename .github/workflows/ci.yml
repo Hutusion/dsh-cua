@@ -54,4 +54,24 @@ jobs:
         run: python -m compileall -q src
 
       - name: Desktop-free verification suite
-        run: python tests/ci-desktop-free.py
+        shell: pwsh
+        run: |
+          # Run the suite and re-emit its output as a check annotation on failure.
+          # Why the shell does it rather than the test: the job-log endpoint requires
+          # authentication (measured: 403 unauthenticated), so a red run is otherwise
+          # opaque from outside. Annotations are readable through the public API, so
+          # surfacing the output here makes a CI-only failure diagnosable without a token.
+          python tests/ci-desktop-free.py *> ci-output.txt
+          $code = $LASTEXITCODE
+          Get-Content ci-output.txt | ForEach-Object { Write-Output $_ }
+
+          if ($code -ne 0) {
+            $flat = (Get-Content ci-output.txt -Raw) -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            $i = 0
+            foreach ($m in [regex]::Matches($flat, '.{1,20000}')) {
+              Write-Output "::error title=ci-output-$i::$($m.Value)"
+              $i++
+            }
+            Write-Output "::error title=ci-desktop-free::$($i annotation chunk(s) above; exit code $code)"
+          }
+          exit $code
