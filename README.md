@@ -1,10 +1,12 @@
 # dsh-cua
 
+[![ci](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml)
+
 Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作优先，截图只是兜底**；
 带跨会话仲裁器——多个 agent 共享一台电脑时自动串行化，并在你正在使用电脑时主动让行。
 
-配套的 [DSH Shell](https://github.com/Hutusion)（Electron 桌面壳）见同组织仓库；本仓库只含
-MCP 服务器与技能本身，对任何 stdio MCP 客户端保持中立（dsh / Claude Code / ZCode / Cline …）。
+本仓库只含 MCP 服务器与技能本身，**对任何 stdio MCP 客户端保持中立**
+（dsh / Claude Code / Codex / Cursor / Cline / ZCode …）—— 不依赖 dsh 才能用。
 
 ## 它是什么
 
@@ -23,9 +25,36 @@ MCP 服务器与技能本身，对任何 stdio MCP 客户端保持中立（dsh /
 每个动作返回**回执**而非自述成功：`action_sent` / `effect_verified` / `foreground_changed` /
 `user-active` / `arbiter-busy`。「调用被接受」和「效果发生」是两件事——工具替 agent 分清。
 
+## 与同类有何不同
+
+Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在**「和人类共用一台机器」**这一点上：
+
+| | dsh-cua | [cua-driver](https://github.com/trycua/cua) | [ahk-mcp](https://github.com/anomalous3/ahk-mcp) | [lean-computer-use-mcp](https://github.com/Kvxw1105/lean-computer-use-mcp) |
+|---|---|---|---|---|
+| 元素动作走 UIA 模式（不抢焦点、不关心 z 序） | ✅ | ✅（ax 档） | ❌ 只有坐标点击 | 经 cua-driver |
+| **检测到人正在输入 → 拒绝** | ✅ `user-active` | ❌ | ❌ | ❌ |
+| 跨 agent 串行化（多进程） | ✅ named mutex | ❌ | ❌ | ❌ |
+| 逐动作效果断言 | ✅ `effect_verified` 三态 | 报告交付档位 | ❌ | ❌ 仅 `state_changed` 启发式 |
+| 抢前台副作用度量 | ✅ `foreground_changed` | ❌ | ❌ | ❌ |
+| 工具数 | 19 | 59 | 15 | 6 |
+
+**关键区别是两件常被混为一谈的事：**
+
+- **「不抢焦点」是机制保证** —— 走 UIA 模式或定向 `PostMessage`，物理上不碰光标和键盘焦点。
+  cua-driver 有（ax 档）；**ahk-mcp 其实没有** —— 它只有坐标点击，每次都移动真实光标。
+- **「你一动就让路」是时间保证** —— 用 `GetLastInputInfo` 读人类最后一次输入的年龄，
+  检测到你正在用就等待，超时则**拒绝**（`user-active`）而不是硬上。**上表另外三个实现里都没有这一条。**
+
+`effect_verified` 同样是同类没有的：它把「调用被接受」和「效果发生」分开，给出三态
+（`true` 变化符合预期 / `false` 接受了但没变并降级为失败 / `null` 无可比状态即未确认）。
+同类的替代做法是动作后重新观察一次，把判断留给模型。
+
+**dsh-cua 不做的事**（先说清楚，避免误解）：没有像素/视觉接地——树表达不了的界面（canvas、
+游戏、远程桌面）用不了；没有录制回放；没有隔离沙箱。这些各有更合适的方案。
+
 ## 安装
 
-需要 **Windows x64 + 桌面会话 + Python ≥3.10**（或装好 uv 直接 uvx）。
+需要 **Windows x64 + 交互式桌面会话 + Python ≥3.10**（或装好 uv 直接 uvx）。
 
 ```bash
 # 方式一：uvx 零安装（推荐）
@@ -38,6 +67,9 @@ dsh-cua-server
 # 方式三：从源码
 pip install git+https://github.com/Hutusion/dsh-cua.git
 ```
+
+> 方式一/二要求 `dsh-cua` 已发布到 PyPI。**若 `uvx`/`pip` 报 404，改用方式三 —— 它总是可用。**
+> 用源码方式时，接线里的 `command` 换成 `dsh-cua-server`（已装进 PATH）。
 
 ## 接线
 
@@ -79,9 +111,18 @@ cp -r skill/computer-use ~/.dsh/skills/
 
 ```bash
 python tests/verify-coexistence.py    # 25 项：零输入证明 / 跨进程互斥 / 合成人机争用 / 杀开关
+python tests/verify-p0-fixes.py       # 0.2.0 修掉的三个 P0：每项在修复前必失败
 ```
 
 测试不需要真人配合——「用户输入」由一次真实 1px 光标移动合成，跑完还原。
+
+**测试需要真实交互式桌面会话**（部分检查要创建窗口并用 UIA 寻址），所以**不能在 GitHub 托管的
+runner 上跑**。CI 覆盖的是不需要桌面的那部分：打包安装、模块导入、diff 索引与树行转义的回归、
+仲裁器的判定逻辑 —— 见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
+
+```bash
+python tests/ci-desktop-free.py       # 上面这些的本地等价物，不需要桌面
+```
 
 ## License
 

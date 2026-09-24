@@ -1,0 +1,57 @@
+name: ci
+
+# What this covers, and what it deliberately does not.
+#
+# The full verification suite (tests/verify-coexistence.py, tests/verify-p0-fixes.py)
+# needs a REAL interactive desktop: it creates a window and addresses it through UIA, and
+# the coexistence checks synthesise human input with a real cursor move. A GitHub-hosted
+# runner has no interactive desktop session, so those scripts cannot run here and are run
+# by hand on a Windows machine with a desktop.
+#
+# What IS covered here is everything that needs no desktop: that the package installs and
+# its entry point resolves, that every module imports, that the diff/escaping logic still
+# behaves (the P0-3 regression), that the arbiter's decision logic is intact, and that a
+# set of behaviors an earlier release dropped are still present. That last group is the
+# reason this file exists — those regressions shipped precisely because nothing tested
+# them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop-free:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares >=3.10; 3.10 is the floor, 3.12 is what it is developed on.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package (validates pyproject, deps, entry point)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Entry point resolves
+        run: |
+          python -c "import importlib.metadata as m; print('dsh-cua', m.version('dsh-cua'))"
+          python -c "from dsh_cua.server import main; assert callable(main); print('main() ok')"
+          # The console script must exist on PATH; --help would start the stdio server,
+          # so only its presence is asserted.
+          python -c "import shutil,sys; p=shutil.which('dsh-cua-server'); sys.exit(0 if p else 'dsh-cua-server not on PATH')"
+
+      - name: Byte-compile every module
+        run: python -m compileall -q src
+
+      - name: Desktop-free verification suite
+        run: python tests/ci-desktop-free.py

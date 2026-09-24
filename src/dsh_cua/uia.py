@@ -474,8 +474,9 @@ def element_action(ref: str, action: str, text: Optional[str] = None,
     finally:
         if gate is not None:
             gate["release"]()
-    if isinstance(out, dict) and out.get("ok") and gate.get("waited_ms", 0) >= 50:
-        out["arbiter"] = {"waited_ms": gate.get("waited_ms")}
+    if isinstance(out, dict):
+        # Unconditional: a caller must be able to tell "gated and free" from "bypassed".
+        out["arbiter"] = arbiter.receipt(gate)
     return out
 
 
@@ -682,6 +683,22 @@ SKYSHOT_DIFF_HEADER = ("The following is a diff from the previous accessibility 
                        "(~ changed, + added).")
 
 
+def _window_identity(hwnd: int) -> dict:
+    """(pid, class, title) for a top-level window — the cheapest proof that an HWND
+    still refers to the window a shot was taken from. A reused HWND keeps its number
+    but changes pid and/or class."""
+    import ctypes.wintypes as _w
+    try:
+        u = ctypes.windll.user32
+        pid = _w.DWORD()
+        u.GetWindowThreadProcessId(_w.HWND(int(hwnd)), ctypes.byref(pid))
+        buf = ctypes.create_unicode_buffer(256)
+        u.GetClassNameW(_w.HWND(int(hwnd)), buf, 256)
+        return {"pid": int(pid.value), "class_name": buf.value, "title": _window_title(hwnd)}
+    except Exception:
+        return {"pid": None, "class_name": "", "title": _window_title(hwnd)}
+
+
 def _window_title(hwnd: int) -> str:
     try:
         u = ctypes.windll.user32
@@ -874,24 +891,32 @@ class SkyshotDiffer:
             return {"text": "\n".join(([header] if header else []) + body),
                     "is_diff": False, "lines": lines}
 
-        prev_by_sig = {l["sig"]: l for l in prev}
+        # Pair previous and current lines ONE-TO-ONE by signature. A dict/set collapses
+        # duplicates, which made a deleted duplicate invisible: prev=[A,A] vs cur=[A]
+        # produced no "Removed" line at all (measured 2026-09-20), so the agent could
+        # not tell that an element it was addressing had gone.
+        prev_pool: dict[str, list] = {}
+        for l in prev:
+            prev_pool.setdefault(l["sig"], []).append(l)
+        matched = set()
         out = [header] if header else []
         out.append(SKYSHOT_DIFF_HEADER)
-        current_sigs = set()
         for l in lines:
-            current_sigs.add(l["sig"])
-            p = prev_by_sig.get(l["sig"])
+            pool = prev_pool.get(l["sig"])
             # Print the CURRENT tree index, never a separate "new element" counter.
             # The index an agent reads is resolved by element_action_at against this
             # same shot's records, so a second numbering scheme here is not cosmetic:
             # it makes the documented loop (read the diff, act on the number it shows)
             # press whatever element happens to hold that positional index. Measured
             # 2026-09-20: the diff printed 1 while index 1 was a different control.
-            if p is None:
+            if pool:
+                p = pool.pop(0)
+                matched.add(id(p))
+                if p["text"] != l["text"]:
+                    out.append(f"~ {l['depth']}\t{l['index']} {l['text']}")
+            else:
                 out.append(f"+ {l['depth']}\t{l['index']} {l['text']}")
-            elif p["text"] != l["text"]:
-                out.append(f"~ {l['depth']}\t{l['index']} {l['text']}")
-        removed = sorted(l["index"] for l in prev if l["sig"] not in current_sigs)
+        removed = sorted(l["index"] for l in prev if id(l) not in matched)
         if removed:
             out.append(f"Removed element IDs: {_summarize_ranges(removed)}")
         # Two elements sharing an identity cannot be told apart by a diff, so say so
@@ -908,7 +933,10 @@ class SkyshotDiffer:
         # Highest index this shot handed out — the only thing `next_index()` needs now
         # that the diff prints real indices instead of a separate counter.
         self._prev_max[key] = lines[-1]["index"] if lines else 0
-        return {"text": "\n".join(out), "is_diff": True, "lines": lines}
+        # `ambiguous` is machine-readable so a caller can require a full render instead
+        # of trusting a diff whose lines may name the wrong index among siblings.
+        return {"text": "\n".join(out), "is_diff": True, "lines": lines,
+                "ambiguous": bool(ambiguous)}
 
 
 _differ = SkyshotDiffer()
@@ -948,7 +976,11 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
     title = _window_title(root)
     header = f'Window: "{title}"' if title else None
     rendered = _differ.render(key, records, header=header, disable_diff=disable_diff)
-    _shots[key] = {"records": records, "time": time.time(), "title": title}
+    # Windows reuses HWND values, so the number alone does not identify a window. The
+    # shot records the process and class it was taken from; element_action_at re-reads
+    # them before acting, and refuses when they changed (see _window_identity).
+    _shots[key] = {"records": records, "time": time.time(), "title": title,
+                   "identity": _window_identity(root)}
     return {
         "ok": True,
         "hwnd": root,
@@ -960,6 +992,7 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
         "window_title": title,
         "text": rendered["text"],
         "is_diff": rendered["is_diff"],
+        "ambiguous_diff": rendered.get("ambiguous", False),
         "node_count": len(records),
         # Kept for compatibility only: the diff no longer uses a separate "new element"
         # counter (it prints this shot's real indices), and positional indices ARE
@@ -985,6 +1018,21 @@ def element_action_at(hwnd: int, index: int, action: str, text: Optional[str] = 
         return {"ok": False, "reason": "stale_shot", "action_sent": False,
                 "error": (f"the skyshot for window {key} is older than "
                           f"{int(_SHOT_TTL_SECONDS)}s; take a fresh one")}
+    # Windows reuses HWND values. If the number now belongs to a different process or
+    # window class, this shot's records address a window that no longer exists — acting
+    # on them would press whatever now happens to hold that position. Refuse instead.
+    identity = shot.get("identity")
+    if identity is not None:
+        current = _window_identity(int(key))
+        if (current.get("pid"), current.get("class_name")) != (identity.get("pid"),
+                                                               identity.get("class_name")):
+            return {"ok": False, "reason": "window_reused", "action_sent": False,
+                    "shot_identity": identity, "current_identity": current,
+                    "error": (f"window {key} is no longer the window this skyshot was "
+                              f"taken from (was pid {identity.get('pid')} / "
+                              f"{identity.get('class_name')!r}, now pid "
+                              f"{current.get('pid')} / {current.get('class_name')!r}); "
+                              f"the shot was discarded — take a fresh one")}
     record = next((r for r in shot["records"] if r["index"] == index), None)
     if record is None:
         return {"ok": False, "reason": "no_such_index", "action_sent": False,

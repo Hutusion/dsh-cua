@@ -424,7 +424,7 @@ def _pixels_to_png(pixels, w2, h2, crop=None):
 def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
                            image_format: str = "jpeg", quality: int = 80,
                            max_dim: int = 0):
-    """Encode BGRA pixels -> (data, scale).
+    """Encode BGRA pixels -> (data, scales).
 
     JPEG exists here because a screenshot is the single most expensive thing an
     agent can put in a conversation: a 1080p PNG runs 1-4 MB, and once it is
@@ -432,11 +432,15 @@ def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
     Measured 2026-09-19: JPEG q80 is ~6-10x smaller than PNG for the same
     pixels, which is what keeps long CUA sessions under that cap.
 
-    `scale` multiplies IMAGE pixels to reach the pixels of the un-downscaled
-    frame, i.e. the screen coordinates `click()` wants. It is exactly 1.0 when
-    `max_dim` does not shrink the image, so the invariant this module is built
-    on — image pixel (0,0) == the click (0,0) — holds unless a caller opts into
-    downscaling, and even then the factor is reported rather than assumed.
+    `scales` maps IMAGE pixels back to the pixels of the un-downscaled frame, i.e.
+    the screen coordinates `click()` wants:
+      {"scale": s, "scale_x": sx, "scale_y": sy, "width": w, "height": h}
+    All three are exactly 1.0 when `max_dim` does not shrink the image, so the
+    invariant this module is built on — image pixel (0,0) == the click (0,0) — holds
+    unless a caller opts into downscaling. When it does, the axes can differ: the
+    encoded size is rounded to whole pixels, so a single ratio would be off by up to
+    ~1.4 px at the far edge (measured 2026-09-20 on 3841x2160 -> 1000x562). Callers
+    that click from image coordinates must use scale_x/scale_y.
     """
     from PIL import Image
     img = Image.frombuffer("RGBA", (w2, h2), bytes(pixels), "raw", "BGRA", 0, 1).convert("RGB")
@@ -453,7 +457,12 @@ def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
     else:
         img.save(buf, format="PNG")
     data = buf.getvalue(); buf.close()
-    return data, scale
+    ew, eh = img.size
+    scales = {"scale": round(scale, 6),
+              "scale_x": round(w2 / ew, 6) if ew else 1.0,
+              "scale_y": round(h2 / eh, 6) if eh else 1.0,
+              "width": ew, "height": eh}
+    return data, scales
 
 def capture_window(hwnd: int, client_only: bool = True):
     """Capture a window to PNG bytes -> (png_bytes, method, bounds).
@@ -475,20 +484,24 @@ def capture_window(hwnd: int, client_only: bool = True):
 
 def capture_window_image(hwnd: int, client_only: bool = True, image_format: str = "jpeg",
                          quality: int = 80, max_dim: int = 0):
-    """Capture a window with an explicit encoder -> (data, method, bounds, scale).
+    """Capture a window with an explicit encoder -> (data, method, bounds, scales).
 
-    See `_pixels_to_image_bytes` for why JPEG is the default and what `scale` means.
+    `scales` is a dict (scale, scale_x, scale_y, width, height); see
+    `_pixels_to_image_bytes` for why JPEG is the default and how to map image
+    coordinates back to screen coordinates. scale_x/scale_y differ only when
+    `max_dim` downscales, and then a single ratio is off by up to ~1.4 px.
     """
     return _capture_window_encoded(hwnd, client_only, image_format, quality, max_dim)
 
 
 def _capture_window_encoded(hwnd: int, client_only: bool = True, image_format: str = "png",
                             quality: int = 80, max_dim: int = 0):
+    """-> (data, method, bounds, scales). `scales` is None only on total failure."""
     h = w.HWND(hwnd)
     r = RECT()
-    if not user32.GetWindowRect(h, byref(r)): return None, None, None, 1.0
+    if not user32.GetWindowRect(h, byref(r)): return None, None, None, None
     w2 = r.right - r.left; h2 = r.bottom - r.top
-    if w2 <= 0 or h2 <= 0: return None, None, None, 1.0
+    if w2 <= 0 or h2 <= 0: return None, None, None, None
 
     # Where the client area sits inside the captured bitmap, and where it sits on screen.
     origin = POINT(0, 0)
@@ -505,19 +518,19 @@ def _capture_window_encoded(hwnd: int, client_only: bool = True, image_format: s
             crop = (left, top, right, bottom)
             bounds = (r.left + left, r.top + top, right - left, bottom - top)
 
-    last = (None, None, None, 1.0)
+    last = (None, None, None, None)
     for method in ("printwindow", "bitblt"):
         got = _capture_pixels(h, w2, h2, method)
         if got is None: continue
         pixels, _ = got
         try:
-            data, scale = _pixels_to_image_bytes(pixels, w2, h2, crop,
-                                                 image_format=image_format,
-                                                 quality=quality, max_dim=max_dim)
+            data, scales = _pixels_to_image_bytes(pixels, w2, h2, crop,
+                                                  image_format=image_format,
+                                                  quality=quality, max_dim=max_dim)
         except ImportError:
-            data, scale = None, 1.0
+            data, scales = None, None
         if data is None: continue
-        last = (data, method, bounds, scale)
+        last = (data, method, bounds, scales)
         if not _pixels_blank(pixels, w2, h2):
             return last
     return last
@@ -547,10 +560,8 @@ def send_hotkey(hwnd: int, *keys: str, dry_run: bool = False,
     finally:
         if gate is not None:
             gate["release"]()
-    if (isinstance(out, dict) and out.get("ok") and gate is not None
-            and gate.get("quiet_waited_ms")):
-        out["arbiter"] = {"waited_ms": gate.get("waited_ms"),
-                          "user_quiet_waited_ms": gate.get("quiet_waited_ms")}
+    if isinstance(out, dict):
+        out["arbiter"] = arbiter.receipt(gate) if gate is not None else arbiter.no_gate("dry-run")
     return out
 
 
@@ -613,11 +624,13 @@ def send_alt_key(hwnd: int, key: str) -> dict:
     gate = arbiter.admit_mutating(hard=False)
     if not gate.get("ok"):
         return {"ok": False, "reason": gate.get("reason"), "hwnd": hwnd, "key": key,
+                "arbiter": arbiter.receipt(gate),
                 "arbiter": {k: v for k, v in gate.items() if k != "release"},
                 "error": gate.get("error")}
     try:
         _send_alt_key_impl(hwnd, key)
-        return {"ok": True, "reason": "sent", "hwnd": hwnd, "key": key}
+        return {"ok": True, "reason": "sent", "hwnd": hwnd, "key": key,
+                "arbiter": arbiter.receipt(gate)}
     finally:
         gate["release"]()
 
@@ -653,7 +666,7 @@ def click(hwnd: int, client_x: int, client_y: int,
         if not gate.get("ok"):
             return {"ok": False, "reason": gate.get("reason"), "hwnd": hwnd,
                     "client_x": client_x, "client_y": client_y, "dry_run": dry_run,
-                    "arbiter": {k: v for k, v in gate.items() if k != "release"},
+                    "arbiter": arbiter.receipt(gate),
                     "error": gate.get("error")}
     try:
         out = _click_impl(hwnd, client_x, client_y, dry_run=dry_run,
@@ -661,10 +674,10 @@ def click(hwnd: int, client_x: int, client_y: int,
     finally:
         if gate is not None:
             gate["release"]()
-    if (isinstance(out, dict) and out.get("ok") and gate is not None
-            and gate.get("quiet_waited_ms")):
-        out["arbiter"] = {"waited_ms": gate.get("waited_ms"),
-                          "user_quiet_waited_ms": gate.get("quiet_waited_ms")}
+    # Uniform receipt on every path: a caller must be able to tell "gate taken and
+    # free" from "no gate by design" from "gate skipped".
+    if isinstance(out, dict):
+        out["arbiter"] = arbiter.receipt(gate) if gate is not None else arbiter.no_gate("dry-run")
     return out
 
 
@@ -732,7 +745,7 @@ def type_text(hwnd: int, text: str, delay: float = 0.01) -> dict:
     if not gate.get("ok"):
         return {"ok": False, "reason": gate.get("reason"), "hwnd": hwnd,
                 "typed": 0, "text_length": len(text),
-                "arbiter": {k: v for k, v in gate.items() if k != "release"},
+                "arbiter": arbiter.receipt(gate),
                 "error": gate.get("error")}
     try:
         h = w.HWND(hwnd); _ensure_visible(hwnd)
@@ -740,6 +753,7 @@ def type_text(hwnd: int, text: str, delay: float = 0.01) -> dict:
             user32.PostMessageW(h, WM_CHAR, ord(ch), 0)
             if delay > 0: time.sleep(delay)
         return {"ok": True, "reason": "typed", "hwnd": hwnd,
+                "arbiter": arbiter.receipt(gate),
                 "typed": len(text), "text_length": len(text)}
     finally:
         gate["release"]()

@@ -204,6 +204,34 @@ def admit_mutating(hard: bool) -> dict:
             "named_mutex": bool(_hmutex)}
 
 
+def receipt(gate: dict) -> dict:
+    """Uniform gate receipt for every mutating result — success or failure.
+
+    Callers need to tell "passed the gate and it was free" apart from "no gate was
+    taken" and from "some path skipped the gate". Attaching a receipt only when the
+    wait was long (the earlier behaviour) left the ordinary case indistinguishable from
+    a bypass, so this is now attached unconditionally, and `taken` says which of the
+    three it was. It carries no callable: `release` stays with the caller.
+    """
+    if not isinstance(gate, dict):
+        return {"taken": False, "reason": "no gate taken",
+                "waited_ms": 0.0, "quiet_waited_ms": 0.0}
+    return {
+        "taken": bool(gate.get("ok")),
+        "waited_ms": round(float(gate.get("waited_ms") or 0), 1),
+        "quiet_waited_ms": round(float(gate.get("quiet_waited_ms") or 0), 1),
+        "named_mutex": bool(gate.get("named_mutex", _hmutex)),
+        "abandoned": bool(gate.get("abandoned", False)),
+        "disabled": bool(gate.get("disabled", not ENABLED)),
+        **({"reason": gate["reason"]} if gate.get("reason") else {}),
+    }
+
+
+def no_gate(reason: str) -> dict:
+    """Receipt for a call that by design takes no gate (a dry run)."""
+    return {"taken": False, "reason": reason, "waited_ms": 0.0, "quiet_waited_ms": 0.0}
+
+
 def state() -> dict:
     """Current policy — exposed as a read-only MCP tool for transparency."""
     return {"enabled": ENABLED, "quiet_ms": QUIET_MS, "max_wait_ms": MAX_WAIT_MS,

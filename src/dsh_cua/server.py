@@ -10,7 +10,8 @@ from .bridge import (
     send_alt_key, send_hotkey, type_text,
     client_to_screen as bridge_client_to_screen,
 )
-from . import arbiter, uia
+from . import arbiter
+from . import uia
 
 def window_pid(hwnd: int) -> int:
     """Owning process of a window — used to assert the element path addresses the
@@ -51,7 +52,7 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
     rect = get_window_rect(hwnd)
     dpi_gate = require_verified_frame_pixels("capture_window")
     t0 = time.perf_counter()
-    data, method, bounds, scale = capture_window_image(
+    data, method, bounds, scales = capture_window_image(
         hwnd, client_only=client_only, image_format=image_format,
         quality=quality, max_dim=max_dim)
     t1 = time.perf_counter()
@@ -92,12 +93,18 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
            "client_origin_on_screen": rect["client_origin_on_screen"],
            "dpi_verified": dpi_gate is None,
            "image_format": image_format, "quality": quality if image_format == "jpeg" else None,
-           "scale": round(scale, 4),
+           # Encoded size + the per-axis ratios from IMAGE pixels to screen pixels.
+           # One ratio is not enough once the encoded size is rounded to whole pixels:
+           # measured 3841x2160 -> 1000x562 leaves the far edge 1.36 px off.
+           "image_width": scales["width"], "image_height": scales["height"],
+           "scale": scales["scale"], "scale_x": scales["scale_x"], "scale_y": scales["scale_y"],
            "size_bytes": len(data), "capture_time_ms": round((t1-t0)*1000, 1),
            "capture_method": method, "saved_path": saved}
-    if scale != 1.0:
+    if scales["scale"] != 1.0:
         out["scale_note"] = ("image is downscaled: multiply image pixel coordinates by "
-                             "`scale` before passing them to click_at")
+                             "`scale_x` / `scale_y` (not the single `scale`) before passing "
+                             "them to click_at; a downscaled shot is for looking, not for "
+                             "pixel-exact clicking")
     if include_data_uri:
         mime = "image/jpeg" if image_format == "jpeg" else "image/png"
         out["data_uri"] = f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}"
@@ -115,11 +122,12 @@ def tool_send_keys(keys: list[str] = None, hwnd: int = 0, title: str = "", use_a
     if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
     if not keys: return {"success": False, "error": "No keys provided"}
     t0 = time.perf_counter()
+    outcome = {}
     try:
         if use_alt_key and len(keys) >= 2:
-            alt = send_alt_key(hwnd, keys[-1])
-            if not alt.get("ok"):
-                return {"success": False, **alt,
+            outcome = send_alt_key(hwnd, keys[-1])
+            if not outcome.get("ok"):
+                return {"success": False, **outcome,
                         "time_ms": round((time.perf_counter()-t0)*1000, 1)}
         else:
             outcome = send_hotkey(hwnd, *keys)
@@ -128,7 +136,11 @@ def tool_send_keys(keys: list[str] = None, hwnd: int = 0, title: str = "", use_a
                         "time_ms": round((time.perf_counter()-t0)*1000, 1)}
     except ValueError as e:
         return {"success": False, "error": str(e)}
-    return {"success": True, "hwnd": hwnd, "keys": keys, "time_ms": round((time.perf_counter()-t0)*1000, 1)}
+    # Carry the gate receipt through: the success path used to drop it, which made a
+    # gated send look identical to a bypass.
+    return {"success": True, "hwnd": hwnd, "keys": keys,
+            "arbiter": outcome.get("arbiter"),
+            "time_ms": round((time.perf_counter()-t0)*1000, 1)}
 
 @mcp.tool(description="Click at client-area coordinates within a window. Coordinates relative to window content area (0,0 = top-left). Tries the ELEMENT path first (resolve the point via UI Automation and invoke that element) because it needs no focus and does not care about z-order; falls back to a raw cursor click, which does. The result's `method` says which was used: 'ax_press' or 'raw_event'. MUTATING: serialized across agent sessions; the raw_event path ALSO YIELDS TO THE USER (waits for input-quiet, then refuses with user-active rather than fighting them for the cursor); the ax_press path injects no physical input. The raw path verifies the addressed window actually owns that screen point and returns success=false instead of clicking another window. Pass dry_run=true to check where the click would land without moving the cursor, clicking, or taking any gate.")
 def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
@@ -156,7 +168,9 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
             if got.get("ok"):
                 return {"success": True, "hwnd": hwnd, "x": x, "y": y,
                         "method": "ax_press", "focus_stolen": False, "dry_run": dry_run,
+                        "action_sent": True, "would_click": False,
                         "element": got.get("element"),
+                        "arbiter": got.get("arbiter"),
                         "attempts": attempts,
                         "time_ms": round((time.perf_counter()-t0)*1000, 1)}
             if dry_run and got.get("reason") == "dry_run":
@@ -167,8 +181,9 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
                 # work" when in fact it resolved the right control and stopped.
                 return {"success": True, "hwnd": hwnd, "x": x, "y": y,
                         "method": "ax_press", "focus_stolen": False, "dry_run": True,
-                        "action_sent": False, "would_press": True,
+                        "action_sent": False, "would_click": True,
                         "element": got.get("element"),
+                        "arbiter": arbiter.no_gate("dry-run"),
                         "attempts": attempts,
                         "time_ms": round((time.perf_counter()-t0)*1000, 1)}
 
@@ -179,8 +194,18 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
     if not outcome.get("ok"):
         return {"success": False, "method": None, "attempts": attempts,
                 **outcome, "time_ms": elapsed}
-    return {"success": True, "hwnd": hwnd, "x": x, "y": y, "dry_run": dry_run,
+    if dry_run:
+        # The raw path's preview must not claim it stole focus: nothing was injected.
+        # It names the path a real click WOULD use, and says nothing was sent.
+        return {"success": True, "hwnd": hwnd, "x": x, "y": y,
+                "method": "raw_event", "focus_stolen": False, "dry_run": True,
+                "action_sent": False, "would_click": True,
+                "arbiter": outcome.get("arbiter") or arbiter.no_gate("dry-run"),
+                "attempts": attempts, "time_ms": elapsed}
+    return {"success": True, "hwnd": hwnd, "x": x, "y": y, "dry_run": False,
+            "action_sent": True, "would_click": False,
             "method": "raw_event", "focus_stolen": True,
+            "arbiter": outcome.get("arbiter"),
             "attempts": attempts, "time_ms": elapsed}
 
 @mcp.tool(description="Perform an action on a UI element by the `ref` from element_at_point — this is the focus-free path: a UI Automation pattern is delivered to the element, so the window is never raised and z-order never matters. MUTATING (soft): serialized across agent sessions; NO physical input is injected, so it can run while the user types — just do not operate the very window the user is working in. `action` must be one of the actions listed for that element (press, set_value, select, toggle, expand, collapse, scroll_into_view, focus); `set_value` also needs `text`. Refuses with the supported list when the element does not offer the action.")
@@ -286,18 +311,20 @@ def tool_clipboard_read() -> dict[str, Any]:
 def tool_clipboard_write(text: str = "") -> dict[str, Any]:
     gate = arbiter.admit_mutating(hard=False)
     if not gate.get("ok"):
-        return {"success": False, "arbiter": {k: v for k, v in gate.items() if k != "release"},
+        return {"success": False, "arbiter": arbiter.receipt(gate),
                 "error": gate.get("error")}
     try:
         try:
             import pyperclip
         except Exception as exc:
-            return {"success": False, "error": f"clipboard backend unavailable: {exc}"}
+            return {"success": False, "arbiter": arbiter.receipt(gate),
+                    "error": f"clipboard backend unavailable: {exc}"}
         try:
             pyperclip.copy(text)
         except Exception as exc:
-            return {"success": False, "error": f"clipboard write failed: {exc}"}
-        return {"success": True, "length": len(text)}
+            return {"success": False, "arbiter": arbiter.receipt(gate),
+                    "error": f"clipboard write failed: {exc}"}
+        return {"success": True, "length": len(text), "arbiter": arbiter.receipt(gate)}
     finally:
         # The gate is process-wide: every other agent session's mutating call waits on
         # it. Returning without releasing wedged them all until the server restarted,
@@ -311,13 +338,14 @@ def tool_open_application(target: str) -> dict[str, Any]:
         return {"success": False, "error": "No target provided"}
     gate = arbiter.admit_mutating(hard=False)
     if not gate.get("ok"):
-        return {"success": False, "arbiter": {k: v for k, v in gate.items() if k != "release"},
+        return {"success": False, "arbiter": arbiter.receipt(gate),
                 "error": gate.get("error")}
     try:
         os.startfile(target)  # noqa: S606 - this tool's purpose is to launch things
-        return {"success": True, "target": target}
+        return {"success": True, "target": target, "arbiter": arbiter.receipt(gate)}
     except Exception as exc:
-        return {"success": False, "target": target, "error": f"startfile failed: {exc}"}
+        return {"success": False, "target": target, "arbiter": arbiter.receipt(gate),
+                "error": f"startfile failed: {exc}"}
     finally:
         gate["release"]()
 

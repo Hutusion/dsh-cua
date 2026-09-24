@@ -5,7 +5,7 @@ and a cross-session arbiter that yields to the human. Windows only by design.
 """
 import sys
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 if sys.platform != "win32":
     raise RuntimeError(
