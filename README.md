@@ -2,155 +2,187 @@
 
 [![ci](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dsh-cua)](https://pypi.org/project/dsh-cua/)
+[![Hutusion/dsh-cua MCP server](https://glama.ai/mcp/servers/Hutusion/dsh-cua/badges/score.svg)](https://glama.ai/mcp/servers/Hutusion/dsh-cua)
 
 <!-- mcp-name: io.github.Hutusion/dsh-cua -->
 
-Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作优先，截图只是兜底**；
-带跨会话仲裁器——多个 agent 共享一台电脑时自动串行化，并在你正在使用电脑时主动让行。
+**English** · [中文](README.zh-CN.md)
 
-本仓库只含 MCP 服务器与技能本身，**对任何 stdio MCP 客户端保持中立**
-（dsh / Claude Code / Codex / Cursor / Cline / ZCode …）—— 不依赖 dsh 才能用。
+An MCP server + agent skill for computer use on Windows: **accessibility element actions come
+first and screenshots are only the fallback**. It ships a cross-session arbiter — when several
+agents share one machine it serializes them, and it yields while you are actually using the
+computer yourself.
 
-**平台语义（0.3.1 起）**：工具只在 Windows 上可用——它们驱动 user32/kernel32 与 UI Automation。
-但**包本身在别的平台也能导入、服务器也能启动**，并照常回应 `tools/list`，所以任何客户端
-或目录抓取器都能枚举到这 19 个工具及其完整 schema；真去调用某个工具时得到的是一句明确的
-「需要 Windows」错误，而不是进程根本起不来。0.3.0 在导入时就抛错，导致这类抓取完全看不到它
-（`tests/linux-handshake.py` 是这条性质的回归测试，CI 在 `ubuntu-latest` 上跑它）。
+This repository contains only the MCP server and the skill. It stays **neutral toward any stdio
+MCP client** (dsh / Claude Code / Codex / Cursor / Cline / ZCode …) — nothing here requires dsh.
 
-## 它是什么
+**Platform semantics (0.3.1 and later)**: the tools only work on Windows — they drive
+user32/kernel32 and UI Automation. But **the package also imports elsewhere and the server
+starts there**, answering `tools/list` as usual, so any client or directory crawler can
+enumerate all 19 tools with their full schemas; actually calling a tool returns a clear
+"requires Windows" error rather than the process failing to start at all. In 0.3.0 the import
+itself raised, which made such crawlers unable to see the server at all
+(`tests/linux-handshake.py` is the regression test for this property, and CI runs it on
+`ubuntu-latest`).
 
-一个 stdio MCP 服务器，暴露 19 个工具：
+## What it is
 
-- **观测**（只读，随时可调）：`skyshot`（把窗口读成带 diff 的紧凑文本树，比截图小三个数量级）、
-  `element_at_point`、`read_element`、`find_elements`、`capture_window`（DPI 感知 + 客户区裁剪）、
-  `list_windows` / `find_window` / `get_window_rect`、`list_displays`、`cursor_position`、
-  `clipboard_read`、`coexistence_status`
-- **元素动作**（软门：跨 agent 串行，无物理输入注入）：`element_action` /
-  `element_action_at`——press / set_value / select / toggle / expand / collapse /
-  scroll_into_view / focus，直接作用于 UIA 元素，**不抢焦点、不关心 z 序**
-- **物理输入**（硬门：跨 agent 串行 + 人机让行）：`click_at`（先元素路径后裸事件）、
-  `send_keys`、`type_text`（PostMessage 定向）、`clipboard_write`、`open_application`
+A stdio MCP server exposing 19 tools:
 
-每个动作返回**回执**而非自述成功：`action_sent` / `effect_verified` / `foreground_changed` /
-`user-active` / `arbiter-busy`。「调用被接受」和「效果发生」是两件事——工具替 agent 分清。
+- **Observe** (read-only, callable at any time): `skyshot` (reads a window as a compact,
+  diffable text tree — three orders of magnitude smaller than a screenshot), `element_at_point`,
+  `read_element`, `find_elements`, `capture_window` (DPI-aware, cropped to the client area),
+  `list_windows` / `find_window` / `get_window_rect`, `list_displays`, `cursor_position`,
+  `clipboard_read`, `coexistence_status`
+- **Element actions** (soft gate: serialized across agents, no physical input injected):
+  `element_action` / `element_action_at` — press / set_value / select / toggle / expand /
+  collapse / scroll_into_view / focus, delivered straight to the UIA element, so they
+  **never steal focus and never care about z-order**
+- **Physical input** (hard gate: serialized across agents + yields to the human): `click_at`
+  (element path first, raw event as fallback), `send_keys`, `type_text` (targeted PostMessage),
+  `clipboard_write`, `open_application`
 
-## 与同类有何不同
+Every action returns a **receipt** rather than a self-reported success: `action_sent` /
+`effect_verified` / `foreground_changed` / `user-active` / `arbiter-busy`. "The call was
+accepted" and "the effect happened" are two different things, and the tool separates them for
+the agent.
 
-Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在**「和人类共用一台机器」**这一点上：
+## How it differs
+
+There are already several mature open-source Windows implementations. dsh-cua's differences are
+concentrated on one thing: **sharing a machine with a human.**
 
 | | dsh-cua | [cua-driver](https://github.com/trycua/cua) | [ahk-mcp](https://github.com/anomalous3/ahk-mcp) | [lean-computer-use-mcp](https://github.com/Kvxw1105/lean-computer-use-mcp) |
 |---|---|---|---|---|
-| 元素动作走 UIA 模式（不抢焦点、不关心 z 序） | ✅ | ✅（ax 档） | ❌ 只有坐标点击 | 经 cua-driver |
-| **检测到人正在输入 → 拒绝** | ✅ `user-active` | ❌ | ❌ | ❌ |
-| 跨 agent 串行化（多进程） | ✅ named mutex | ❌ | ❌ | ❌ |
-| 逐动作效果断言 | ✅ `effect_verified` 三态 | 报告交付档位 | ❌ | ❌ 仅 `state_changed` 启发式 |
-| 抢前台副作用度量 | ✅ `foreground_changed` | ❌ | ❌ | ❌ |
-| 工具数 | 19 | 59 | 15 | 6 |
+| Element actions via UIA patterns (no focus steal, z-order irrelevant) | ✅ | ✅ (ax mode) | ❌ coordinate clicks only | via cua-driver |
+| **Recent human input → refuse** | ✅ `user-active` | ❌ | ❌ | ❌ |
+| Cross-agent serialization (multi-process) | ✅ named mutex | ❌ | ❌ | ❌ |
+| Per-action effect assertion | ✅ three-state `effect_verified` | reports a delivery tier | ❌ | ❌ `state_changed` heuristic only |
+| Foreground-steal side effect measured | ✅ `foreground_changed` | ❌ | ❌ | ❌ |
+| Tool count | 19 | 59 | 15 | 6 |
 
-**关键区别是两件常被混为一谈的事：**
+**The key distinction is two things that are routinely conflated:**
 
-- **「不抢焦点」是机制保证** —— 走 UIA 模式或定向 `PostMessage`，物理上不碰光标和键盘焦点。
-  cua-driver 有（ax 档）；**ahk-mcp 其实没有** —— 它只有坐标点击，每次都移动真实光标。
-- **「你一动就让路」是时间保证** —— 用 `GetLastInputInfo` 读人类最后一次输入的年龄，
-  检测到你正在用就等待，超时则**拒绝**（`user-active`）而不是硬上。**上表另外三个实现里都没有这一条。**
+- **"No focus steal" is a mechanism guarantee** — either a UIA pattern or a targeted
+  `PostMessage`, so the cursor and keyboard focus are physically never touched. cua-driver has
+  it (ax mode); **ahk-mcp actually does not** — it only has coordinate clicks, so every action
+  moves the real cursor.
+- **"Yield the moment you move" is a timing guarantee** — it reads the age of the human's last
+  input via `GetLastInputInfo`, waits when it sees you using the machine, and on timeout
+  **refuses** (`user-active`) instead of barging in. **None of the other three implementations
+  in that table has this.**
 
-`effect_verified` 同样是同类没有的：它把「调用被接受」和「效果发生」分开，给出三态
-（`true` 变化符合预期 / `false` 接受了但没变并降级为失败 / `null` 无可比状态即未确认）。
-同类的替代做法是动作后重新观察一次，把判断留给模型。
+`effect_verified` is likewise something the alternatives lack: it splits "the call was accepted"
+from "the effect happened" and gives three states (`true` changed as expected / `false` accepted
+but unchanged, downgraded to a failure / `null` no comparable state, i.e. unconfirmed). The
+usual alternative is to re-observe once after the action and leave the judgement to the model.
 
-**dsh-cua 不做的事**（先说清楚，避免误解）：没有像素/视觉接地——树表达不了的界面（canvas、
-游戏、远程桌面）用不了；没有录制回放；没有隔离沙箱。这些各有更合适的方案。
+**What dsh-cua does not do** (stated up front to avoid misunderstanding): no pixel/vision
+grounding — interfaces a tree cannot express (canvas, games, remote desktop) are out of reach;
+no record-and-replay; no isolation sandbox. There are better-suited tools for those.
 
-## 安装
+## Install
 
-需要 **Windows x64 + 交互式桌面会话 + Python ≥3.10** 才能真正操控桌面。
-（包在 Linux/macOS 上同样可以安装与启动，`tools/list` 正常返回，只是调用工具时会明确
-报「需要 Windows」——见上文"平台语义"。）
+You need **Windows x64 + an interactive desktop session + Python ≥3.10** to actually drive a
+desktop. (The package installs and starts on Linux/macOS too, `tools/list` answers normally,
+and a tool call then reports "requires Windows" — see "platform semantics" above.)
 
 ```bash
-# 方式一：uvx 零安装（推荐）
-uvx dsh-cua                      # 直接运行 stdio MCP server
+# Option 1: uvx, zero install (recommended)
+uvx dsh-cua                      # runs the stdio MCP server directly
 
-# 方式二：pip
+# Option 2: pip
 pip install dsh-cua
 
-# 方式三：从源码
+# Option 3: from source
 pip install git+https://github.com/Hutusion/dsh-cua.git
 ```
 
-三种方式装完后，**用 `python -m dsh_cua` 起服务**：
+However you install it, **start the server with `python -m dsh_cua`**:
 
 ```bash
-python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
+python -m dsh_cua                # depends on no executable being on PATH
 ```
 
-> **为什么不写 `dsh-cua-server`**：pip 会把 console script 装进解释器的 `Scripts` 目录，
-> 而**那个目录不一定在 PATH 上** —— 实测 stock python.org 3.12 的 User 与 Machine PATH
-> 都不含它，于是 `pip install dsh-cua` 成功、`dsh-cua-server` 却报 command not found。
-> `python -m` 不需要任何 PATH 条目。console script 仍然提供，PATH 里有它时可用。
+> **Why the README does not say `dsh-cua-server`**: pip installs console scripts into the
+> interpreter's `Scripts` directory, and **that directory is not necessarily on PATH** —
+> measured on a stock python.org 3.12 install, neither the User nor the Machine PATH contained
+> it, so `pip install dsh-cua` succeeded while `dsh-cua-server` reported command not found.
+> `python -m` needs no PATH entry at all. The console script is still shipped and works when
+> PATH does contain it.
 >
-> 方式一/二现在都可用：包已发布在 PyPI（<https://pypi.org/project/dsh-cua/>）。
-> 若哪一天 `uvx`/`pip` 报 404，用方式三 —— 它总是可用。
+> Options 1 and 2 both work today: the package is published on PyPI
+> (<https://pypi.org/project/dsh-cua/>). If `uvx`/`pip` ever 404s, use option 3 — it always
+> works.
 
-## 接线
+## Wiring it up
 
-任何 MCP 客户端，把 server 命名为 **`win32`**（skill 的工具名约定是 `mcp__win32__*`）。
+Any MCP client; name the server **`win32`** (the skill's tool-name convention is
+`mcp__win32__*`).
 
-**`python -m`（不依赖 PATH，推荐）**：
+**`python -m` (no PATH dependency, recommended)**:
 
 ```json
 { "mcpServers": { "win32": { "command": "python", "args": ["-m", "dsh_cua"] } } }
 ```
 
-**`uvx`（PyPI 发布后）**：
+**`uvx`**:
 
 ```json
 { "mcpServers": { "win32": { "command": "uvx", "args": ["dsh-cua"] } } }
 ```
 
-更多形状见 [`examples/`](examples/)：Claude Code / 通用客户端 / dsh 的 cordis.patch.yml 片段 /
-想让模型看懂截图时所需的路由模态声明（`tr-route-settings.yml`）。
+More shapes are in [`examples/`](examples/): Claude Code / generic clients / a dsh
+`cordis.patch.yml` fragment / the route modality declaration you need if you want the model to
+read screenshots (`tr-route-settings.yml`).
 
-## 技能（可选但强烈建议）
+## Skill (optional but strongly recommended)
 
-[`skill/computer-use/SKILL.md`](skill/computer-use/SKILL.md) 是配套的使用教条：观察→定位→动作→复核
-的循环、回执语义、重试安全、与人类共存的纪律。没有它模型也能用工具，但有了它模型会**自己选对
-路径**——实测差别很大。把它复制进你的技能目录即可：
+[`skill/computer-use/SKILL.md`](skill/computer-use/SKILL.md) is the companion doctrine for using
+these tools: the observe → locate → act → verify loop, receipt semantics, retry safety, and the
+discipline of coexisting with a human. The model can use the tools without it, but with it the
+model **picks the right path by itself** — the measured difference is large. Copy it into your
+skills directory:
 
 ```bash
-# Claude Code / 通用 agents
+# Claude Code / generic agents
 cp -r skill/computer-use ~/.agents/skills/
 # dsh
 cp -r skill/computer-use ~/.dsh/skills/
 ```
 
-## 安全模型
+## Security model
 
-| 级别 | 覆盖操作 | 门 |
+| Tier | Operations | Gate |
 |---|---|---|
-| 只读 | 观测类 12 个工具 | 不进门，随时可调 |
-| 软门 | 元素动作、PostMessage 打字、剪贴板写、启动应用 | 跨 agent 互斥锁（named mutex，多进程自动串行） |
-| 硬门 | 裸点击、全局热键 | 互斥锁 + `GetLastInputInfo` 人机让行：用户最近有输入就等待，超时则拒绝 `user-active` 而非抢光标 |
+| Read-only | the 12 observe tools | no gate, callable at any time |
+| Soft | element actions, PostMessage typing, clipboard write, launching applications | cross-agent mutex (named mutex, multi-process, automatic serialization) |
+| Hard | raw clicks, global hotkeys | mutex + `GetLastInputInfo` yielding: if the user typed recently it waits, and on timeout refuses with `user-active` instead of stealing the cursor |
 
-诚实边界：让行是合作协议不是硬保证（注入前 150ms 紧检查已尽量收窄窗口）；
-个别应用连 `set_value` 都会自激活（回执会如实报告 `foreground_changed`）；
-同一窗口的「双人操作」没有技术解，别和 agent 同时操作同一个窗口。
+Honest boundaries: yielding is a cooperation protocol, not a hard guarantee (the tight check
+150 ms before injection narrows the window as much as possible); a few applications
+self-activate even on `set_value` (the receipt reports `foreground_changed` truthfully); and
+two operators on the same window has no technical solution — do not drive the same window the
+agent is driving.
 
-## 测试
+## Tests
 
 ```bash
-python tests/verify-coexistence.py    # 25 项：零输入证明 / 跨进程互斥 / 合成人机争用 / 杀开关
-python tests/verify-p0-fixes.py       # 0.2.0 修掉的三个 P0：每项在修复前必失败
+python tests/verify-coexistence.py    # 25 checks: zero-input proof / cross-process mutex / synthetic human contention / kill switch
+python tests/verify-p0-fixes.py       # the three P0s fixed in 0.2.0: each fails before the fix
 ```
 
-测试不需要真人配合——「用户输入」由一次真实 1px 光标移动合成，跑完还原。
+The tests need no human cooperation — "user input" is synthesized with one real 1-pixel cursor
+move, and the cursor is restored afterwards.
 
-**测试需要真实交互式桌面会话**（部分检查要创建窗口并用 UIA 寻址），所以**不能在 GitHub 托管的
-runner 上跑**。CI 覆盖的是不需要桌面的那部分：打包安装、模块导入、diff 索引与树行转义的回归、
-仲裁器的判定逻辑 —— 见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
+**The tests need a real interactive desktop session** (some checks create windows and address
+them through UIA), so they **cannot run on a GitHub-hosted runner**. What CI does cover is the
+part that needs no desktop: packaging and installation, module import, regressions for the diff
+index and tree-line escaping, and the arbiter's decision logic — see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ```bash
-python tests/ci-desktop-free.py       # 上面这些的本地等价物，不需要桌面
+python tests/ci-desktop-free.py       # the local equivalent of the above, no desktop needed
 ```
 
 ## License
