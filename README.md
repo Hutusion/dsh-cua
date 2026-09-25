@@ -32,20 +32,26 @@ itself raised, which made such crawlers unable to see the server at all
 
 ## What it is
 
-A stdio MCP server exposing 19 tools:
+A stdio MCP server exposing 19 tools. Every tool name is prefixed `tool_`, exactly as
+`tools/list` returns it.
 
-- **Observe** (read-only, callable at any time): `skyshot` (reads a window as a compact,
-  diffable text tree — three orders of magnitude smaller than a screenshot), `element_at_point`,
-  `read_element`, `find_elements`, `capture_window` (DPI-aware, cropped to the client area),
-  `list_windows` / `find_window` / `get_window_rect`, `list_displays`, `cursor_position`,
-  `clipboard_read`, `coexistence_status`
+- **Observe** (read-only, callable at any time): `tool_skyshot` (reads a window as a compact,
+  diffable text tree — three orders of magnitude smaller than a screenshot), `tool_element_at_point`,
+  `tool_read_element`, `tool_find_elements`, `tool_capture_window` (DPI-aware, cropped to the client area),
+  `tool_list_windows` / `tool_find_window` / `tool_get_window_rect`, `tool_list_displays`, `tool_cursor_position`,
+  `tool_clipboard_read`, `tool_coexistence_status`
 - **Element actions** (soft gate: serialized across agents, no physical input injected):
-  `element_action` / `element_action_at` — press / set_value / select / toggle / expand /
+  `tool_element_action` / `tool_element_action_at` — press / set_value / select / toggle / expand /
   collapse / scroll_into_view / focus, delivered straight to the UIA element, so they
   **never steal focus and never care about z-order**
-- **Physical input** (hard gate: serialized across agents + yields to the human): `click_at`
-  (element path first, raw event as fallback), `send_keys`, `type_text` (targeted PostMessage),
-  `clipboard_write`, `open_application`
+- **Physical input** (hard gate: serialized across agents + yields to the human): `tool_click_at`
+  (element path first, raw event as fallback), `tool_send_keys`, `tool_type_text` (targeted PostMessage),
+  `tool_clipboard_write`, `tool_open_application`
+
+"Read-only" here means it takes no mutating action and synthesizes no input, so it is safe to
+call while someone is using the machine. Two of them have a side effect worth knowing:
+`tool_capture_window` writes the screenshot to disk (`save_path`; a temp file when omitted), and
+`tool_skyshot` updates the server-side diff baseline it diffs the next shot against.
 
 Every action returns a **receipt** rather than a self-reported success: `action_sent` /
 `effect_verified` / `foreground_changed` / `user-active` / `arbiter-busy`. "The call was
@@ -59,7 +65,7 @@ concentrated on one thing: **sharing a machine with a human.**
 
 | | dsh-cua | [cua-driver](https://github.com/trycua/cua) | [ahk-mcp](https://github.com/anomalous3/ahk-mcp) | [lean-computer-use-mcp](https://github.com/Kvxw1105/lean-computer-use-mcp) |
 |---|---|---|---|---|
-| Element actions via UIA patterns (no focus steal, z-order irrelevant) | ✅ | ✅ (ax mode) | ❌ coordinate clicks only | via cua-driver |
+| Element actions delivered as UIA patterns (no focus steal, z-order irrelevant) | ✅ | ✅ (ax mode) | ❌ reads via UIA, acts by coordinate click | via cua-driver |
 | **Recent human input → refuse** | ✅ `user-active` | ❌ | ❌ | ❌ |
 | Cross-agent serialization (multi-process) | ✅ named mutex | ❌ | ❌ | ❌ |
 | Per-action effect assertion | ✅ three-state `effect_verified` | reports a delivery tier | ❌ | ❌ `state_changed` heuristic only |
@@ -70,12 +76,16 @@ concentrated on one thing: **sharing a machine with a human.**
 
 - **"No focus steal" is a mechanism guarantee** — either a UIA pattern or a targeted
   `PostMessage`, so the cursor and keyboard focus are physically never touched. cua-driver has
-  it (ax mode); **ahk-mcp actually does not** — it only has coordinate clicks, so every action
-  moves the real cursor.
+  it (ax mode). **ahk-mcp does not**, and the distinction is narrower than "no UIA": it reads
+  through UIA (`ahk_uia_tree` / `ahk_uia_find` / `ahk_uia_url`), but it has no UIA *pattern
+  action* — per its README it acts with coordinate clicks or synthetic keys, so an action does
+  move the real cursor.
 - **"Yield the moment you move" is a timing guarantee** — it reads the age of the human's last
   input via `GetLastInputInfo`, waits when it sees you using the machine, and on timeout
-  **refuses** (`user-active`) instead of barging in. **None of the other three implementations
-  in that table has this.**
+  **refuses** (`user-active`) instead of barging in. As of 2026-09-25 a pattern search across
+  the other three codebases in that table found no equivalent — that is search evidence, not
+  proof, and it covers input-age detection only: cua-driver does have human-facing guards of a
+  different kind (a consent requirement, and foreground-steal detection with restore).
 
 `effect_verified` is likewise something the alternatives lack: it splits "the call was accepted"
 from "the effect happened" and gives three states (`true` changed as expected / `false` accepted

@@ -9,11 +9,12 @@ name: ci
 # by hand on a Windows machine with a desktop.
 #
 # What IS covered here is everything that needs no desktop: that the package installs and
-# its entry point resolves, that every module imports, that the diff/escaping logic still
-# behaves (the P0-3 regression), that the arbiter's decision logic is intact, and that a
-# set of behaviors an earlier release dropped are still present. That last group is the
-# reason this file exists — those regressions shipped precisely because nothing tested
-# them.
+# its entry point resolves, that every module imports, that no ctypes name is taken from a
+# module that does not define it (how 0.3.2 shipped a tool that raised on every call), that
+# the diff/escaping logic still behaves (the P0-3 regression), that the arbiter's decision
+# logic is intact, and that a set of behaviors an earlier release dropped are still present.
+# That last group is the reason this file exists — those regressions shipped precisely because
+# nothing tested them.
 
 on:
   push:
@@ -85,6 +86,9 @@ jobs:
 
       - name: Workflow shell blocks parse
         run: python tests/check-workflow-shell.py
+
+      - name: No ctypes name is taken from the module that lacks it
+        run: python tests/check-ctypes-names.py
 
       - name: Desktop-free verification suite
         shell: pwsh

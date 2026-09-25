@@ -775,7 +775,7 @@ def list_displays() -> list[dict]:
     MONITOR_DEFAULTTOPRIMARY = 1
     monitors: list[dict] = []
 
-    @_ct.WINFUNCTYPE(_ct.BOOL, _ct.HMONITOR, _ct.HDC, _ct.POINTER(_wt.RECT), _ct.LPARAM)
+    @_ct.WINFUNCTYPE(_wt.BOOL, _wt.HMONITOR, _wt.HDC, _ct.POINTER(_wt.RECT), _wt.LPARAM)
     def _on_monitor(hmon, hdc, lprect, lparam):
         mi = MONITORINFOEXW()
         mi.cbSize = _ct.sizeof(MONITORINFOEXW)

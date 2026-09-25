@@ -22,17 +22,21 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
 
 ## 它是什么
 
-一个 stdio MCP 服务器，暴露 19 个工具：
+一个 stdio MCP 服务器，暴露 19 个工具。工具名一律带 `tool_` 前缀，与 `tools/list` 返回的完全一致。
 
-- **观测**（只读，随时可调）：`skyshot`（把窗口读成带 diff 的紧凑文本树，比截图小三个数量级）、
-  `element_at_point`、`read_element`、`find_elements`、`capture_window`（DPI 感知 + 客户区裁剪）、
-  `list_windows` / `find_window` / `get_window_rect`、`list_displays`、`cursor_position`、
-  `clipboard_read`、`coexistence_status`
-- **元素动作**（软门：跨 agent 串行，无物理输入注入）：`element_action` /
-  `element_action_at`——press / set_value / select / toggle / expand / collapse /
+- **观测**（只读，随时可调）：`tool_skyshot`（把窗口读成带 diff 的紧凑文本树，比截图小三个数量级）、
+  `tool_element_at_point`、`tool_read_element`、`tool_find_elements`、`tool_capture_window`（DPI 感知 + 客户区裁剪）、
+  `tool_list_windows` / `tool_find_window` / `tool_get_window_rect`、`tool_list_displays`、`tool_cursor_position`、
+  `tool_clipboard_read`、`tool_coexistence_status`
+- **元素动作**（软门：跨 agent 串行，无物理输入注入）：`tool_element_action` /
+  `tool_element_action_at`——press / set_value / select / toggle / expand / collapse /
   scroll_into_view / focus，直接作用于 UIA 元素，**不抢焦点、不关心 z 序**
-- **物理输入**（硬门：跨 agent 串行 + 人机让行）：`click_at`（先元素路径后裸事件）、
-  `send_keys`、`type_text`（PostMessage 定向）、`clipboard_write`、`open_application`
+- **物理输入**（硬门：跨 agent 串行 + 人机让行）：`tool_click_at`（先元素路径后裸事件）、
+  `tool_send_keys`、`tool_type_text`（PostMessage 定向）、`tool_clipboard_write`、`tool_open_application`
+
+这里的「只读」指不产生变更动作、不合成输入，所以别人正在用这台机器时也可以调。其中两个有值得知道的
+副作用：`tool_capture_window` 会把截图写到磁盘（`save_path`，省略则写临时文件），`tool_skyshot`
+会更新服务端的 diff 基线。
 
 每个动作返回**回执**而非自述成功：`action_sent` / `effect_verified` / `foreground_changed` /
 `user-active` / `arbiter-busy`。「调用被接受」和「效果发生」是两件事——工具替 agent 分清。
@@ -43,7 +47,7 @@ Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在*
 
 | | dsh-cua | [cua-driver](https://github.com/trycua/cua) | [ahk-mcp](https://github.com/anomalous3/ahk-mcp) | [lean-computer-use-mcp](https://github.com/Kvxw1105/lean-computer-use-mcp) |
 |---|---|---|---|---|
-| 元素动作走 UIA 模式（不抢焦点、不关心 z 序） | ✅ | ✅（ax 档） | ❌ 只有坐标点击 | 经 cua-driver |
+| 元素动作以 UIA 模式投递（不抢焦点、不关心 z 序） | ✅ | ✅（ax 档） | ❌ 用 UIA 读、靠坐标点击动作 | 经 cua-driver |
 | **检测到人正在输入 → 拒绝** | ✅ `user-active` | ❌ | ❌ | ❌ |
 | 跨 agent 串行化（多进程） | ✅ named mutex | ❌ | ❌ | ❌ |
 | 逐动作效果断言 | ✅ `effect_verified` 三态 | 报告交付档位 | ❌ | ❌ 仅 `state_changed` 启发式 |
@@ -53,9 +57,13 @@ Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在*
 **关键区别是两件常被混为一谈的事：**
 
 - **「不抢焦点」是机制保证** —— 走 UIA 模式或定向 `PostMessage`，物理上不碰光标和键盘焦点。
-  cua-driver 有（ax 档）；**ahk-mcp 其实没有** —— 它只有坐标点击，每次都移动真实光标。
+  cua-driver 有（ax 档）。**ahk-mcp 没有**，但这里的区别比「没有 UIA」窄：它确实用 UIA 读取
+  （`ahk_uia_tree` / `ahk_uia_find` / `ahk_uia_url`），只是没有 UIA **模式动作** ——
+  按其 README，它靠坐标点击或合成按键动作，所以动作会移动真实光标。
 - **「你一动就让路」是时间保证** —— 用 `GetLastInputInfo` 读人类最后一次输入的年龄，
-  检测到你正在用就等待，超时则**拒绝**（`user-active`）而不是硬上。**上表另外三个实现里都没有这一条。**
+  检测到你正在用就等待，超时则**拒绝**（`user-active`）而不是硬上。截至 2026-09-25，对上表
+  另外三个代码库做模式检索未发现等价实现 —— 这是检索证据而非证明，且只覆盖「输入年龄检测」：
+  cua-driver 另有不同类型的人机保护（需人类同意的授权门、前台抢焦检测与恢复）。
 
 `effect_verified` 同样是同类没有的：它把「调用被接受」和「效果发生」分开，给出三态
 （`true` 变化符合预期 / `false` 接受了但没变并降级为失败 / `null` 无可比状态即未确认）。

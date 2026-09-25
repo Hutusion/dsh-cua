@@ -12,7 +12,8 @@ WHY THIS EXISTS
                               (list_windows / find_window / get_window_rect /
                               capture_window / skyshot / read_element /
                               find_elements / element_at_point / cursor_pos /
-                              clipboard_read / list_displays).
+                              clipboard_read / list_displays /
+                              coexistence_status).
       2. MUTATING SERIALIZATION  every state-changing operation first takes a named
                               Win32 mutex (Local\\dsh-cua-input-arbiter), so multiple
                               agent processes (dsh spawns one MCP server per session)

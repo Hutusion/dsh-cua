@@ -15,11 +15,13 @@ name: publish
 # authorization valid for that single run. Nothing secret lives in the repo, on a runner, or
 # on a developer machine — so there is no credential to leak, rotate or forget.
 #
-# Trigger: publishing a GitHub Release. Two gates sit in front of the upload, because a PyPI
+# Trigger: publishing a GitHub Release. Three gates sit in front of the upload, because a PyPI
 # upload cannot be undone (a released file can be yanked but never replaced):
 #
-#   1. the release tag must match the version in pyproject.toml, and
-#   2. the built WHEEL must install and answer `tools/list` on Linux — the exact property
+#   1. the source being built IS the tagged commit — `v<version>` must resolve to GITHUB_SHA
+#      (plus, when the trigger is a release, the release tag must match pyproject's version),
+#   2. pyproject.toml and dsh_cua.__version__ agree, and
+#   3. the built WHEEL must install and answer `tools/list` on Linux — the exact property
 #      directory crawlers (Glama and friends) gate their listings on, checked on the artifact
 #      that is about to be uploaded rather than on the source tree.
 #
@@ -33,6 +35,10 @@ on:
   # Kept for retries: if the release-triggered run fails for an infrastructure reason, this
   # lets the same commit be re-published without cutting a new release. Re-uploading an
   # already-released version is refused by PyPI, so a stray run is harmless.
+  #
+  # It must target the TAG, not a branch — `gh workflow run publish.yml --ref v0.3.2`. The
+  # source-binding gate below refuses a dispatch whose commit is not the tagged commit, which
+  # is what makes "the same commit" an enforced property rather than an assumption.
   workflow_dispatch:
 
 jobs:
@@ -42,24 +48,52 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The source-binding gate below resolves the release tag, so the tag and the history
+          # it points into must actually be present; the default shallow, tag-less checkout
+          # would make that gate fail for the wrong reason.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: The release tag must match the version being published
-        if: github.event_name == 'release'
+      - name: The source being built must be the tagged commit
         shell: bash
         run: |
-          tag="${{ github.event.release.tag_name }}"
+          # This replaces a check that only ran `if: github.event_name == 'release'` and only
+          # compared tag/version NAMES. Two holes came out of that: a workflow_dispatch run
+          # skipped the gate entirely and bound the build to nothing, and a lightweight tag
+          # force-moved after the release would still pass while changing what gets built.
+          # Asserting tag SHA == GITHUB_SHA closes both, and is the only thing in this file
+          # that ties the artifact to a commit.
           version="$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
-          echo "tag=$tag  version=$version"
-          # Both `0.3.2` and `v0.3.2` are accepted; anything else is refused, because a
-          # mismatched tag would burn a version number nobody intended to release.
-          if [ "$tag" != "$version" ] && [ "$tag" != "v$version" ]; then
-            echo "::error title=tag/version mismatch::release tag '$tag' does not match pyproject version '$version'"
+          tag="v$version"
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            released="${{ github.event.release.tag_name }}"
+            echo "release tag=$released  pyproject version=$version"
+            # Both `0.3.2` and `v0.3.2` are accepted; anything else is refused, because a
+            # mismatched tag would burn a version number nobody intended to release.
+            if [ "$released" != "$version" ] && [ "$released" != "$tag" ]; then
+              echo "::error title=tag/version mismatch::release tag '$released' does not match pyproject version '$version'"
+              exit 1
+            fi
+          fi
+
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error title=missing tag::pyproject says $version but this repository has no tag $tag"
             exit 1
           fi
+          tag_sha="$(git rev-parse "$tag^{commit}")"
+          echo "tag $tag -> $tag_sha"
+          echo "GITHUB_SHA -> $GITHUB_SHA"
+          if [ "$tag_sha" != "$GITHUB_SHA" ]; then
+            echo "::error title=untagged source::the commit being built ($GITHUB_SHA) is not the commit $tag points at ($tag_sha). To re-publish a version, dispatch on its tag: gh workflow run publish.yml --ref $tag"
+            exit 1
+          fi
+          echo "::notice title=source bound to tag::$tag == $tag_sha"
 
       - name: pyproject and dsh_cua.__version__ must agree
         run: |

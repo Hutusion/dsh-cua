@@ -16,7 +16,11 @@ It asserts four things:
     2. the package imports and `dsh_cua.server.main` is callable
     3. `initialize` answers, and `tools/list` returns the full tool set with the same
        read-only subset the README documents, schemas included
-    4. calling a tool fails with the Windows-only explanation instead of crashing the server
+    4. calling EVERY read-only tool fails with the Windows-only explanation instead of
+       crashing the server. One tool was not enough: this file used to call only
+       `tool_list_windows` while 0.3.2 shipped `tool_list_displays` raising
+       `module 'ctypes' has no attribute 'BOOL'` on every Windows machine. The schema was
+       perfect, and this test stayed green.
 
 Why the requests are sent one at a time
     The first version piped all four messages in at once and closed stdin. That raced the
@@ -54,6 +58,25 @@ def fail(message: str, detail: str = "") -> None:
     if detail:
         print(detail)
     sys.exit(1)
+
+
+def minimal_args(schema: dict) -> dict:
+    """The smallest argument set that passes schema validation, so the call reaches the tool.
+
+    Derived from the schema rather than hard-coded, because the values are never used: off
+    Windows the tool body raises before touching them. Deriving them means a tool that gains a
+    required argument keeps being exercised here instead of quietly dropping out of the loop.
+    """
+    properties = (schema or {}).get("properties") or {}
+    args: dict = {}
+    for name in (schema or {}).get("required") or []:
+        spec = properties.get(name) or {}
+        if spec.get("enum"):
+            args[name] = spec["enum"][0]
+        else:
+            args[name] = {"integer": 0, "number": 0, "boolean": False,
+                          "array": [], "object": {}}.get(spec.get("type"), "0")
+    return args
 
 
 class StdioServer:
@@ -196,21 +219,31 @@ def main() -> int:
         print(f"tools       : {len(tools)} total, {len(read_only)} read-only, "
               "descriptions + schemas present")
 
-        # 4. calling a Windows-only tool must explain itself, not take the server down.
-        server.send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                     "params": {"name": "tool_list_windows", "arguments": {}}})
-        called = server.await_id(3)
-        result = called.get("result", {})
-        text = " ".join(part.get("text", "") for part in result.get("content", [])
-                        if isinstance(part, dict))
-        if "error" in called:
-            text = json.dumps(called["error"])
-        elif result.get("isError") is not True:
-            fail("a Windows-only tool call neither errored nor reported isError",
-                 json.dumps(called)[:800] + "\n" + server.diagnostics())
-        if "requires Windows" not in text:
-            fail("the refusal does not say Windows is required", text[:800] or json.dumps(called)[:800])
-        print(f"tool call   : refused as expected -> {text.strip()[:100]}...")
+        # 4. EVERY read-only tool must explain itself, not take the server down.
+        #    Calling one tool proved too little (see the docstring): the assertion here is the
+        #    refusal itself, because off Windows none of these can do real work — a tool whose
+        #    guard is missing answers with a traceback instead, and that is the difference
+        #    worth catching.
+        schemas = {t["name"]: (t.get("inputSchema") or {}) for t in tools}
+        bad: list[str] = []
+        for index, name in enumerate(sorted(EXPECTED_READ_ONLY), start=3):
+            server.send({"jsonrpc": "2.0", "id": index, "method": "tools/call",
+                         "params": {"name": name, "arguments": minimal_args(schemas[name])}})
+            called = server.await_id(index)
+            result = called.get("result", {})
+            text = " ".join(part.get("text", "") for part in result.get("content", [])
+                            if isinstance(part, dict))
+            if "error" in called:
+                text = json.dumps(called["error"])
+            elif result.get("isError") is not True:
+                fail(f"{name} neither errored nor reported isError",
+                     json.dumps(called)[:800] + "\n" + server.diagnostics())
+            if "requires Windows" not in text:
+                bad.append(f"{name} -> {text.strip()[:200] or json.dumps(called)[:200]}")
+        if bad:
+            fail("a Windows-only tool refuses without saying Windows is required",
+                 "\n".join(bad))
+        print(f"tool calls  : all {len(EXPECTED_READ_ONLY)} read-only tools refused as expected")
     finally:
         server.close()
 
