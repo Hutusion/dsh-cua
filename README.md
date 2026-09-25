@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml)
 
+<!-- mcp-name: io.github.Hutusion/dsh-cua -->
+
 Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作优先，截图只是兜底**；
 带跨会话仲裁器——多个 agent 共享一台电脑时自动串行化，并在你正在使用电脑时主动让行。
 
