@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dsh-cua"
-version = "0.3.2"
+version = "0.3.3"
 description = "Windows computer-use MCP server: accessibility-first element actions, skyshot text trees, guarded raw input, and a cross-session arbiter that yields to the human"
 readme = "README.md"
 requires-python = ">=3.10"

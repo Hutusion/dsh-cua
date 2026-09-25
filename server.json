@@ -7,12 +7,12 @@
     "url": "https://github.com/Hutusion/dsh-cua",
     "source": "github"
   },
-  "version": "0.3.2",
+  "version": "0.3.3",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "dsh-cua",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "transport": {
         "type": "stdio"
       }
