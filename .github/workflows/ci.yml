@@ -90,6 +90,12 @@ jobs:
       - name: No ctypes name is taken from the module that lacks it
         run: python tests/check-ctypes-names.py
 
+      # linux-handshake.py SKIPs on Windows, so this is the only place its reply classifier can
+      # be guarded on the platform it is written on. It runs the classifier against payloads
+      # recorded from real runs, including the 0.3.2 defect.
+      - name: The handshake's reply classifier still judges recorded payloads correctly
+        run: python tests/check-handshake-classifier.py
+
       - name: Desktop-free verification suite
         shell: pwsh
         run: |

@@ -16,11 +16,12 @@ It asserts four things:
     2. the package imports and `dsh_cua.server.main` is callable
     3. `initialize` answers, and `tools/list` returns the full tool set with the same
        read-only subset the README documents, schemas included
-    4. calling EVERY read-only tool fails with the Windows-only explanation instead of
-       crashing the server. One tool was not enough: this file used to call only
-       `tool_list_windows` while 0.3.2 shipped `tool_list_displays` raising
-       `module 'ctypes' has no attribute 'BOOL'` on every Windows machine. The schema was
-       perfect, and this test stayed green.
+    4. calling EVERY read-only tool answers cleanly — either the Windows-only refusal, or a
+       real structured result, for the tools that are not Win32-backed
+       (`tool_clipboard_read` goes through pyperclip and really runs). One tool was not
+       enough: this file used to call only `tool_list_windows` while 0.3.2 shipped
+       `tool_list_displays` raising `module 'ctypes' has no attribute 'BOOL'` on every
+       Windows machine. The schema was perfect, and this test stayed green.
 
 Why the requests are sent one at a time
     The first version piped all four messages in at once and closed stdin. That raced the
@@ -154,6 +155,50 @@ class StdioServer:
             self.proc.wait(timeout=5)
 
 
+def classify_reply(called: dict) -> tuple[str, str]:
+    """Judge one tools/call reply: ("refused" | "answered" | "bad", detail).
+
+    Split out of main() so it can be exercised without a Linux runner, because the first
+    version of this loop asserted that EVERY read-only tool refuses with the Windows-only
+    message — and CI disproved that on its very first run. `tool_clipboard_read` is not
+    Win32-backed: it goes through pyperclip and really runs, answering `{"success": false}` on a
+    bare runner. That is a correct answer, not a refusal.
+
+    The intentional refusal and a genuine bug arrive in the SAME shapes — FastMCP renders an
+    exception raised inside a tool as `Error executing tool <name>: ...` in the content, and also
+    uses the JSON-RPC `error` member — so the message is what separates them, never the shape:
+
+        "... requires Windows ..."                  -> the guard working as designed
+        a JSON object/array                         -> a clean answer (success or failure is the
+                                                       tool's business, not this test's)
+        anything else, in either shape              -> a defect, and the reason this test exists
+
+    The JSON-RPC branch is checked first and is NOT waved through as an answer: an error object
+    is itself JSON, and treating a stray protocol error as a reply is exactly the kind of false
+    green this whole file exists to avoid.
+    """
+    if "error" in called:
+        text = json.dumps(called["error"]).strip()
+        if "requires Windows" in text:
+            return "refused", ""
+        return "bad", f"JSON-RPC error: {text[:200]}"
+
+    result = called.get("result") or {}
+    text = " ".join(part.get("text", "") for part in result.get("content", [])
+                    if isinstance(part, dict)).strip()
+
+    if "requires Windows" in text:
+        return "refused", ""
+    if text.startswith("{") or text.startswith("["):
+        try:
+            json.loads(text)
+        except json.JSONDecodeError:
+            return "bad", f"the answer is not valid JSON: {text[:200]}"
+        return "answered", ""
+    return "bad", ("neither refused as Windows-only nor answered: "
+                   f"{text[:200] or json.dumps(called)[:200]}")
+
+
 def main() -> int:
     if sys.platform == "win32":
         print("SKIP: this test asserts the NON-Windows path; on Windows the guard is unused.")
@@ -219,31 +264,29 @@ def main() -> int:
         print(f"tools       : {len(tools)} total, {len(read_only)} read-only, "
               "descriptions + schemas present")
 
-        # 4. EVERY read-only tool must explain itself, not take the server down.
-        #    Calling one tool proved too little (see the docstring): the assertion here is the
-        #    refusal itself, because off Windows none of these can do real work — a tool whose
-        #    guard is missing answers with a traceback instead, and that is the difference
-        #    worth catching.
+        # 4. EVERY read-only tool must answer cleanly. Two outcomes are correct off Windows and
+        #    both are accepted (see classify_reply): the Win32-backed tools refuse with the
+        #    Windows-only explanation, and tools that are not Win32-backed really run. What must
+        #    never happen is an unhandled exception — 0.3.2's tool_list_displays produced exactly
+        #    that on Windows, and this loop is what would have caught it.
         schemas = {t["name"]: (t.get("inputSchema") or {}) for t in tools}
         bad: list[str] = []
+        refused = answered = 0
         for index, name in enumerate(sorted(EXPECTED_READ_ONLY), start=3):
             server.send({"jsonrpc": "2.0", "id": index, "method": "tools/call",
                          "params": {"name": name, "arguments": minimal_args(schemas[name])}})
             called = server.await_id(index)
-            result = called.get("result", {})
-            text = " ".join(part.get("text", "") for part in result.get("content", [])
-                            if isinstance(part, dict))
-            if "error" in called:
-                text = json.dumps(called["error"])
-            elif result.get("isError") is not True:
-                fail(f"{name} neither errored nor reported isError",
-                     json.dumps(called)[:800] + "\n" + server.diagnostics())
-            if "requires Windows" not in text:
-                bad.append(f"{name} -> {text.strip()[:200] or json.dumps(called)[:200]}")
+            verdict, detail = classify_reply(called)
+            if verdict == "bad":
+                bad.append(f"{name} -> {detail}")
+            elif verdict == "refused":
+                refused += 1
+            else:
+                answered += 1
         if bad:
-            fail("a Windows-only tool refuses without saying Windows is required",
-                 "\n".join(bad))
-        print(f"tool calls  : all {len(EXPECTED_READ_ONLY)} read-only tools refused as expected")
+            fail("a read-only tool did not answer cleanly", "\n".join(bad))
+        print(f"tool calls  : {len(EXPECTED_READ_ONLY)} read-only tools answered cleanly "
+              f"({refused} refused as Windows-only, {answered} answered for real)")
     finally:
         server.close()
 
