@@ -6,7 +6,12 @@
 
 <!-- mcp-name: io.github.Hutusion/dsh-cua -->
 
-**English** · [中文](README.zh-CN.md)
+**English** · [中文](https://github.com/Hutusion/dsh-cua/blob/main/README.zh-CN.md)
+
+<!-- Links in this file are absolute on purpose: PyPI renders this same README at
+     https://pypi.org/project/dsh-cua/, where a relative target (README.zh-CN.md,
+     examples/, skill/...) resolves against pypi.org and 404s. GitHub needs no help with
+     either form. Do not "simplify" these back to relative paths. -->
 
 An MCP server + agent skill for computer use on Windows: **accessibility element actions come
 first and screenshots are only the fallback**. It ships a cross-session arbiter — when several
@@ -132,13 +137,13 @@ Any MCP client; name the server **`win32`** (the skill's tool-name convention is
 { "mcpServers": { "win32": { "command": "uvx", "args": ["dsh-cua"] } } }
 ```
 
-More shapes are in [`examples/`](examples/): Claude Code / generic clients / a dsh
+More shapes are in [`examples/`](https://github.com/Hutusion/dsh-cua/tree/main/examples): Claude Code / generic clients / a dsh
 `cordis.patch.yml` fragment / the route modality declaration you need if you want the model to
 read screenshots (`tr-route-settings.yml`).
 
 ## Skill (optional but strongly recommended)
 
-[`skill/computer-use/SKILL.md`](skill/computer-use/SKILL.md) is the companion doctrine for using
+[`skill/computer-use/SKILL.md`](https://github.com/Hutusion/dsh-cua/blob/main/skill/computer-use/SKILL.md) is the companion doctrine for using
 these tools: the observe → locate → act → verify loop, receipt semantics, retry safety, and the
 discipline of coexisting with a human. The model can use the tools without it, but with it the
 model **picks the right path by itself** — the measured difference is large. Copy it into your
@@ -179,7 +184,7 @@ move, and the cursor is restored afterwards.
 them through UIA), so they **cannot run on a GitHub-hosted runner**. What CI does cover is the
 part that needs no desktop: packaging and installation, module import, regressions for the diff
 index and tree-line escaping, and the arbiter's decision logic — see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+[`.github/workflows/ci.yml`](https://github.com/Hutusion/dsh-cua/blob/main/.github/workflows/ci.yml).
 
 ```bash
 python tests/ci-desktop-free.py       # the local equivalent of the above, no desktop needed

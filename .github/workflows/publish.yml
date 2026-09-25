@@ -1,0 +1,123 @@
+name: publish
+
+# Publishes the package to PyPI through Trusted Publishing (OIDC).
+#
+# Why this file exists. Until now "publish" meant running `uv publish` by hand from one
+# machine with an API token sitting in a plaintext file. Measured 2026-09-25, that token was
+# ACCOUNT-scoped: it could upload to every project on the account, not just this one, and it
+# had to be created, stored and revoked by hand — the revocation itself went through PyPI's
+# password gate twice. None of that is a property of this project; it is a property of
+# token-based publishing.
+#
+# With Trusted Publishing there is no token anywhere. PyPI is configured once, on its side, to
+# trust this repository + THIS workflow file + the `pypi` environment. GitHub then mints a
+# short-lived OIDC token for the publishing job and PyPI exchanges it for an upload
+# authorization valid for that single run. Nothing secret lives in the repo, on a runner, or
+# on a developer machine — so there is no credential to leak, rotate or forget.
+#
+# Trigger: publishing a GitHub Release. Two gates sit in front of the upload, because a PyPI
+# upload cannot be undone (a released file can be yanked but never replaced):
+#
+#   1. the release tag must match the version in pyproject.toml, and
+#   2. the built WHEEL must install and answer `tools/list` on Linux — the exact property
+#      directory crawlers (Glama and friends) gate their listings on, checked on the artifact
+#      that is about to be uploaded rather than on the source tree.
+#
+# Setup, once: https://pypi.org/manage/account/publishing/ → "Add a new pending publisher"
+# with PyPI Project Name `dsh-cua`, Owner `Hutusion`, Repository name `dsh-cua`,
+# Workflow name `publish.yml`, Environment name `pypi`.
+
+on:
+  release:
+    types: [published]
+  # Kept for retries: if the release-triggered run fails for an infrastructure reason, this
+  # lets the same commit be re-published without cutting a new release. Re-uploading an
+  # already-released version is refused by PyPI, so a stray run is harmless.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The release tag must match the version being published
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          version="$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+          echo "tag=$tag  version=$version"
+          # Both `0.3.2` and `v0.3.2` are accepted; anything else is refused, because a
+          # mismatched tag would burn a version number nobody intended to release.
+          if [ "$tag" != "$version" ] && [ "$tag" != "v$version" ]; then
+            echo "::error title=tag/version mismatch::release tag '$tag' does not match pyproject version '$version'"
+            exit 1
+          fi
+
+      - name: pyproject and dsh_cua.__version__ must agree
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys, tomllib
+
+          declared = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          source = pathlib.Path("src/dsh_cua/__init__.py").read_text()
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', source)
+          if not match:
+              sys.exit("src/dsh_cua/__init__.py has no __version__ to compare")
+          runtime = match.group(1)
+          print(f"pyproject={declared}  dsh_cua.__version__={runtime}")
+          # A drift here is invisible until someone compares the PyPI metadata against what
+          # the server reports over MCP, which is exactly the kind of thing nobody checks.
+          if declared != runtime:
+              sys.exit(f"::error title=version drift::pyproject says {declared}, dsh_cua says {runtime}")
+          PY
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: The wheel installs, and the server answers introspection on Linux
+        shell: bash
+        run: |
+          # Run the repository's own regression test against the INSTALLED wheel, from /tmp so
+          # the checkout's src/ cannot shadow the installed package. A wheel that cannot do
+          # this is a wheel Glama will refuse to list, so it must not reach PyPI.
+          python -m venv /tmp/wheelcheck
+          /tmp/wheelcheck/bin/python -m pip install --upgrade pip
+          /tmp/wheelcheck/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/wheelcheck/bin/python "$GITHUB_WORKSPACE/tests/linux-handshake.py"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Must match the "Environment name" on PyPI's pending-publisher form; it is also where a
+    # required-reviewer rule would go if a human should approve each release.
+    environment: pypi
+    permissions:
+      # The OIDC token IS the credential — without this the action has nothing to present.
+      id-token: write
+      # Reading the artifact from the build job.
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
