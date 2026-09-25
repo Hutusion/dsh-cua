@@ -135,6 +135,29 @@ try:
 except Exception as exc:  # noqa: BLE001 - a handshake that cannot complete IS the failure
     check("initialize returns serverInfo", False, f"{type(exc).__name__}: {exc}")
 
+# ------------------------------------------- registry record (why 0.3.4's registry run died)
+# server.json is validated against the registry's JSON schema in publish-registry.yml — but that
+# workflow only runs on a Release, so a bad record fails AFTER PyPI has already published. That
+# is the worst possible moment to learn about it. Measured 2026-09-25: 0.3.4 shipped a 239-char
+# description against the schema's maxLength of 100, publish-registry died 5 seconds in, and the
+# registry kept advertising 0.3.3 while PyPI served 0.3.4. Both facts below are checkable with
+# no network and no desktop, so check them on every push instead of on every release.
+# The 100 is the registry schema's number for the server-level `description`
+# (static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json); if it ever changes,
+# this failing is the reminder to re-read that schema.
+print("\nREG — server.json is publishable before a Release ever exists")
+try:
+    _record = json.loads(Path(REPO, "server.json").read_text(encoding="utf-8"))
+    _desc = _record.get("description", "")
+    check("server.json description fits the registry schema (<=100 chars)",
+          len(_desc) <= 100, f"{len(_desc)} chars")
+    _rec_versions = {v for v in [_record.get("version")]
+                     + [p.get("version") for p in _record.get("packages", [])] if v}
+    check("server.json versions match the package version",
+          _rec_versions == {__version__}, f"{sorted(_rec_versions)} vs {__version__}")
+except Exception as exc:  # noqa: BLE001 - an unreadable record IS the failure
+    check("server.json parses", False, f"{type(exc).__name__}: {exc}")
+
 # --------------------------------------------------- differ: index correctness (P0-3)
 print("\nT3 — a diff's printed index addresses the element it names")
 

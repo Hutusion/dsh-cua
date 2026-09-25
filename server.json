@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Hutusion/dsh-cua",
   "title": "dsh-cua - Windows Computer Use",
-  "description": "Windows computer-use MCP server for dsh (DeepSeek Harness) — client-neutral, works with any stdio MCP client. Accessibility-first element actions, skyshot text trees, guarded raw input, and a cross-session arbiter that yields to the human.",
+  "description": "Windows computer-use MCP server for dsh (DeepSeek Harness), client-neutral, 19 tools.",
   "repository": {
     "url": "https://github.com/Hutusion/dsh-cua",
     "source": "github"
