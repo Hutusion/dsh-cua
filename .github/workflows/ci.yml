@@ -154,4 +154,33 @@ jobs:
 
       - name: Server starts and advertises every tool (off Windows)
         shell: bash
-        run: python tests/linux-handshake.py
+        run: |
+          # The job-log endpoint is 403 unauthenticated, so a red run is otherwise opaque from
+          # outside — the same lesson the Windows job learned. Publish the output through the
+          # two channels that need no token: check annotations (readable via the public API;
+          # measured working 2026-09-25) and the job summary (rendered on the public run page).
+          set +e
+          python tests/linux-handshake.py 2>&1 | tee /tmp/linux-handshake.log
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$code" -ne 0 ]; then
+            if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+              {
+                echo "### linux-handshake: FAIL (exit $code)"
+                echo '```text'
+                cat /tmp/linux-handshake.log
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            python - <<'PY'
+          text = open('/tmp/linux-handshake.log', encoding='utf-8', errors='replace').read()
+          flat = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          for i in range(0, max(len(flat), 1), 20000):
+              print(f"::error title=linux-handshake-{i // 20000}::{flat[i:i + 20000]}")
+          PY
+          else
+            # A green run should still say what it verified, not merely that it exited 0.
+            echo "::notice title=linux-handshake::$(grep -E '^(imports ok|serverInfo|tools|tool call)' /tmp/linux-handshake.log | tr '\n' ' ')"
+          fi
+          exit "$code"
