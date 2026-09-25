@@ -44,9 +44,16 @@ A stdio MCP server exposing 19 tools. Every tool name is prefixed `tool_`, exact
   `tool_element_action` / `tool_element_action_at` — press / set_value / select / toggle / expand /
   collapse / scroll_into_view / focus, delivered straight to the UIA element, so they
   **never steal focus and never care about z-order**
-- **Physical input** (hard gate: serialized across agents + yields to the human): `tool_click_at`
-  (element path first, raw event as fallback), `tool_send_keys`, `tool_type_text` (targeted PostMessage),
-  `tool_clipboard_write`, `tool_open_application`
+- **Other mutating calls** (soft gate too: the mutex, but **no** human-contention yield):
+  `tool_type_text` (targeted PostMessage), `tool_clipboard_write`, `tool_open_application`. They
+  synthesize no physical input, so they do **not** wait for you to stop working — and a clipboard
+  write still destroys whatever you last copied, so announce it when you do.
+- **Physical input** (hard gate: serialized across agents **and** yields to the human): exactly two
+  things share your one cursor and one keyboard — `tool_click_at`'s **raw_event path** and
+  `tool_send_keys`' global hotkeys. The gate waits for the machine to go input-quiet, then refuses
+  with `user-active` rather than fight you for the cursor. `tool_click_at` tries its **element path
+  first** (`ax_press`), which injects no physical input and therefore takes the mutex only; the
+  receipt's `method` field says which path actually ran.
 
 "Read-only" here means it takes no mutating action and synthesizes no input, so it is safe to
 call while someone is using the machine. Two of them have a side effect worth knowing:

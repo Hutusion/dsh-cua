@@ -31,8 +31,13 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
 - **元素动作**（软门：跨 agent 串行，无物理输入注入）：`tool_element_action` /
   `tool_element_action_at`——press / set_value / select / toggle / expand / collapse /
   scroll_into_view / focus，直接作用于 UIA 元素，**不抢焦点、不关心 z 序**
-- **物理输入**（硬门：跨 agent 串行 + 人机让行）：`tool_click_at`（先元素路径后裸事件）、
-  `tool_send_keys`、`tool_type_text`（PostMessage 定向）、`tool_clipboard_write`、`tool_open_application`
+- **其它写入型调用**（同样是软门：只拿互斥量，**不**做人机让行）：`tool_type_text`（PostMessage 定向）、
+  `tool_clipboard_write`、`tool_open_application`。它们不合成物理输入，所以**不会**等你停手——
+  而剪贴板写入仍会毁掉你上次复制的内容，用之前先声明。
+- **物理输入**（硬门：跨 agent 串行 **且** 人机让行）：只有两样东西和你共用同一个光标与键盘——
+  `tool_click_at` 的**裸事件路径**与 `tool_send_keys` 的全局热键。门禁会等机器进入输入静默，
+  超时后以 `user-active` 拒绝，而不是和你抢光标。`tool_click_at` 会**先试元素路径**（`ax_press`），
+  它不注入物理输入，因此只拿互斥量——回执里的 `method` 字段说明实际走了哪条。
 
 这里的「只读」指不产生变更动作、不合成输入，所以别人正在用这台机器时也可以调。其中两个有值得知道的
 副作用：`tool_capture_window` 会把截图写到磁盘（`save_path`，省略则写临时文件），`tool_skyshot`
