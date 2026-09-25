@@ -1,6 +1,7 @@
 # dsh-cua
 
 [![ci](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/dsh-cua)](https://pypi.org/project/dsh-cua/)
 
 <!-- mcp-name: io.github.Hutusion/dsh-cua -->
 
@@ -9,6 +10,12 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
 
 本仓库只含 MCP 服务器与技能本身，**对任何 stdio MCP 客户端保持中立**
 （dsh / Claude Code / Codex / Cursor / Cline / ZCode …）—— 不依赖 dsh 才能用。
+
+**平台语义（0.3.1 起）**：工具只在 Windows 上可用——它们驱动 user32/kernel32 与 UI Automation。
+但**包本身在别的平台也能导入、服务器也能启动**，并照常回应 `tools/list`，所以任何客户端
+或目录抓取器都能枚举到这 19 个工具及其完整 schema；真去调用某个工具时得到的是一句明确的
+「需要 Windows」错误，而不是进程根本起不来。0.3.0 在导入时就抛错，导致这类抓取完全看不到它
+（`tests/linux-handshake.py` 是这条性质的回归测试，CI 在 `ubuntu-latest` 上跑它）。
 
 ## 它是什么
 
@@ -56,7 +63,9 @@ Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在*
 
 ## 安装
 
-需要 **Windows x64 + 交互式桌面会话 + Python ≥3.10**。
+需要 **Windows x64 + 交互式桌面会话 + Python ≥3.10** 才能真正操控桌面。
+（包在 Linux/macOS 上同样可以安装与启动，`tools/list` 正常返回，只是调用工具时会明确
+报「需要 Windows」——见上文"平台语义"。）
 
 ```bash
 # 方式一：uvx 零安装（推荐）
@@ -80,7 +89,8 @@ python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
 > 都不含它，于是 `pip install dsh-cua` 成功、`dsh-cua-server` 却报 command not found。
 > `python -m` 不需要任何 PATH 条目。console script 仍然提供，PATH 里有它时可用。
 >
-> 方式一/二要求包已发布到 PyPI。**若 `uvx`/`pip` 报 404，用方式三 —— 它总是可用。**
+> 方式一/二现在都可用：包已发布在 PyPI（<https://pypi.org/project/dsh-cua/>）。
+> 若哪一天 `uvx`/`pip` 报 404，用方式三 —— 它总是可用。
 
 ## 接线
 

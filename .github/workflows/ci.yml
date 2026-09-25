@@ -119,3 +119,39 @@ jobs:
             Write-Output ("::error title=ci-desktop-free::{0} annotation chunk(s) above; exit code {1}" -f $i, $code)
           }
           exit $code
+
+  # The regression test for the guard in src/dsh_cua/server.py.
+  #
+  # 0.3.0 raised RuntimeError while importing the package off Windows, so the server could not
+  # start there at all. That blindfolds anything which enumerates a server by running it and
+  # reading `tools/list` — Glama builds and runs every server inside a Linux sandbox before a
+  # listing becomes discoverable, and withholds the listing when that build or run fails.
+  # 0.3.1 guards the Win32 imports instead, and this job is what keeps that true. It can only
+  # run here: on Windows the Win32 modules import normally and the guard is never exercised.
+  #
+  # Each step declares `shell: bash` explicitly. That is also why they appear as `skip` in the
+  # "Workflow shell blocks parse" step above — that checker validates PowerShell and correctly
+  # refuses to guess that a bash block is PowerShell.
+  linux-introspection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the package (validates the sys_platform markers)
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test]"
+          # The Windows-only dependencies must NOT be installed here; the test asserts it
+          # again from the installed set, but failing early says which layer broke.
+          python -c "import importlib.util as u; import sys; \
+            bad=[m for m in ('comtypes','pywinauto') if u.find_spec(m)]; \
+            sys.exit('installed on Linux: %s' % bad if bad else 0)"
+
+      - name: Server starts and advertises every tool (off Windows)
+        shell: bash
+        run: python tests/linux-handshake.py

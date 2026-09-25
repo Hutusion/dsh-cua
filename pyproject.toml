@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dsh-cua"
-version = "0.3.0"
+version = "0.3.1"
 description = "Windows computer-use MCP server: accessibility-first element actions, skyshot text trees, guarded raw input, and a cross-session arbiter that yields to the human"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,8 +27,13 @@ dependencies = [
   # suite died on the runner at import — with an unreadable log, every run. Migrating to
   # the 2.x API is its own piece of work; until then the ceiling keeps installs working.
   "mcp>=1.2,<2",
-  "pywinauto>=0.6.9",
-  "comtypes>=1.4",
+  # Windows-only, and now declared as such. Both ship as `py3-none-any` wheels, so pip
+  # installs them on any platform and they only fail later, at import (measured on Ubuntu
+  # 24.04 / Python 3.12, where `from ctypes import windll` raises). The marker keeps a
+  # non-Windows install honest: the server still starts there and answers `tools/list` so a
+  # directory can introspect it, but nothing pretends the Win32 stack is present.
+  "pywinauto>=0.6.9; sys_platform == 'win32'",
+  "comtypes>=1.4; sys_platform == 'win32'",
   "pyperclip>=1.9",
   "Pillow>=10",
 ]

@@ -27,9 +27,10 @@ Why the reporting is loud, and why the exit code is NOT the diagnosis
     `::error` there would fail a green step.
 
 What it checks
-    Every `run:` block in `.github/workflows/*.yml`, parsed as the shell the step
-    declares (`shell: pwsh`, or the runner default on Windows, which is pwsh). Blocks
-    using another shell are reported as skipped rather than silently passed.
+    Every `run:` block in `.github/workflows/*.yml`, parsed as the shell the step declares
+    (`shell: pwsh`), or — when a step declares none — as the shell its own runner defaults
+    to: pwsh on a Windows runner, bash on every other runner. Blocks using another shell are
+    reported as skipped rather than silently passed.
 
 Exit codes (local use only — CI normalizes them to 1, see above)
     0  every block parses
@@ -125,7 +126,17 @@ def iter_steps(doc: dict):
     for job_name, job in (doc.get("jobs") or {}).items():
         for index, step in enumerate(job.get("steps") or []):
             if "run" in step:
-                yield job_name, index, step
+                yield job_name, job, index, step
+
+
+def default_shell(job: dict) -> str:
+    """The shell GitHub picks for a `run:` step that declares none.
+
+    Windows runners default to pwsh; every other runner defaults to bash. Assuming pwsh
+    everywhere would parse a bash block as PowerShell and report a syntax error that does
+    not exist — a false alarm from the very checker meant to prevent confusing failures.
+    """
+    return "pwsh" if "windows" in str(job.get("runs-on") or "").lower() else "bash"
 
 
 def main() -> int:
@@ -158,8 +169,8 @@ def main() -> int:
         for path in files:
             rel = path.relative_to(REPO) if path.is_relative_to(REPO) else path
             doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            for job_name, index, step in iter_steps(doc):
-                shell = str(step.get("shell") or "pwsh").lower()
+            for job_name, job, index, step in iter_steps(doc):
+                shell = str(step.get("shell") or default_shell(job)).lower()
                 label = f"{rel}:{job_name}[{index}] {step.get('name', '(unnamed step)')}"
                 if shell not in ("pwsh", "powershell"):
                     print(f"  skip  {label}  (shell={shell})")

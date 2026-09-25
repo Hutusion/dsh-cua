@@ -1,17 +1,53 @@
 """Win32 MCP Server - persistent desktop automation bridge."""
 from __future__ import annotations
-import base64, time, ctypes, sys, os
+import base64, time, ctypes, ctypes.wintypes, sys, os
 from typing import Any
 from mcp.server.fastmcp import FastMCP
 
-from .bridge import (
-    capture_window, capture_window_image, click, cursor_pos, dpi_awareness, find_window,
-    get_window_rect, list_displays, list_windows, require_verified_frame_pixels,
-    send_alt_key, send_hotkey, type_text,
-    client_to_screen as bridge_client_to_screen,
-)
-from . import arbiter
-from . import uia
+from . import WINDOWS, WINDOWS_ONLY_MESSAGE
+
+if WINDOWS:
+    from .bridge import (
+        capture_window, capture_window_image, click, cursor_pos, dpi_awareness, find_window,
+        get_window_rect, list_displays, list_windows, require_verified_frame_pixels,
+        send_alt_key, send_hotkey, type_text,
+        client_to_screen as bridge_client_to_screen,
+    )
+    from . import arbiter
+    from . import uia
+else:
+    # Off Windows the Win32 modules are not merely useless, they are unimportable:
+    # `ctypes.windll` and `ctypes.WINFUNCTYPE` do not exist there and `comtypes` is
+    # Windows-only — measured on Ubuntu 24.04 / Python 3.12, where `from ctypes import
+    # windll` raises ImportError. Without this guard `import dsh_cua.server` fails, so the
+    # server never starts and no client can enumerate the tools.
+    #
+    # Standing the names up as objects that raise keeps the module importable and the
+    # `tools/list` response complete: each tool's JSON schema comes from the signature
+    # defined in THIS file, not from these helpers, so introspection still sees all of them.
+    # Only an actual call fails, with the reason.
+    class _RequiresWindows:
+        """Stand-in for a Windows-only module or function: every use raises."""
+
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def _refuse(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError(f"{self._name}: {WINDOWS_ONLY_MESSAGE}")
+
+        def __getattr__(self, _item: str) -> Any:
+            # `arbiter.receipt()` / `uia.<fn>()` both land here.
+            return self._refuse
+
+        def __call__(self, *_args: Any, **_kwargs: Any) -> Any:
+            return self._refuse()
+
+    _stub = _RequiresWindows
+    capture_window = capture_window_image = click = cursor_pos = dpi_awareness = find_window = _stub("the Win32 bridge")
+    get_window_rect = list_displays = list_windows = require_verified_frame_pixels = _stub("the Win32 bridge")
+    send_alt_key = send_hotkey = type_text = bridge_client_to_screen = _stub("the Win32 bridge")
+    arbiter = _stub("the coexistence arbiter")
+    uia = _stub("UI Automation")
 
 def window_pid(hwnd: int) -> int:
     """Owning process of a window — used to assert the element path addresses the
