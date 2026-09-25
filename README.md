@@ -99,9 +99,13 @@ from "the effect happened" and gives three states (`true` changed as expected / 
 but unchanged, downgraded to a failure / `null` no comparable state, i.e. unconfirmed). The
 usual alternative is to re-observe once after the action and leave the judgement to the model.
 
-**What dsh-cua does not do** (stated up front to avoid misunderstanding): no pixel/vision
-grounding — interfaces a tree cannot express (canvas, games, remote desktop) are out of reach;
-no record-and-replay; no isolation sandbox. There are better-suited tools for those.
+**What dsh-cua does not do** (stated up front to avoid misunderstanding): no grounding of its
+own — the server does not analyse pixels, so **a text-only model** cannot drive interfaces that
+a tree cannot express (canvas, games, remote desktop). With a **vision-capable model** the pixel
+path is supported end to end: `capture_window` returns the image together with a verified
+image→screen mapping (`bounds`, `scale`, `dpi_verified`), and the model supplies the grounding.
+Also not provided: record-and-replay, and an isolation sandbox. There are better-suited tools
+for those.
 
 ## Install
 
