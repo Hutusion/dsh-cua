@@ -20,6 +20,11 @@ name: publish-registry
 # record that fell behind, and it is the reason this is a workflow of its own rather than a job
 # inside publish.yml: a manual re-run of that one would attempt a duplicate PyPI upload, which
 # PyPI refuses, and the registry job would then be skipped for the wrong reason.
+#
+# Being a separate workflow also means the two race: both fire on `release: published`, and this
+# one finishes first. Measured on v0.3.3 — this job reached its publish step at 07:24:44, while
+# publish.yml did not complete the PyPI upload until 07:25:34. The registry verifies that the
+# version it is pointed at really exists, so it refused. Hence the wait below.
 
 on:
   release:
@@ -64,6 +69,35 @@ jobs:
 
       - name: Validate the record against the registry schema
         run: /tmp/mcp-publisher/mcp-publisher validate ./server.json
+
+      - name: Wait for that version to exist on PyPI
+        run: |
+          # The two publish workflows both trigger on `release: published` and run concurrently,
+          # and this one is much faster (see the header). The registry refuses a record pointing at
+          # a version that does not exist yet, so wait for it to land rather than lose the release.
+          #
+          # Ordering the workflows would fix the race too, but at the cost of making this one
+          # unrunnable on its own — and being runnable on its own is the whole reason the manual
+          # dispatch path exists.
+          #
+          # The condition is HTTP 200 AND info.version matching, not the status code alone:
+          # pypi.org answers some paths with a 200 bot-challenge page (measured — /project/<name>/
+          # <bogus>.md -> 200, 3038 bytes, not JSON), so a bare 200 could be a false green.
+          # /pypi/<name>/<version>/json is not behind that wall and 404s honestly (measured —
+          # /pypi/dsh-cua/9.9.9/json -> 404, 24 bytes).
+          version="$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+          url="https://pypi.org/pypi/dsh-cua/$version/json"
+          for attempt in $(seq 1 40); do
+            if curl -fsS -o /tmp/pypi.json "$url" 2>/dev/null \
+               && python -c "import json,sys; sys.exit(0 if json.load(open('/tmp/pypi.json'))['info']['version'] == '$version' else 1)"; then
+              echo "::notice title=version is live::dsh-cua $version is on PyPI (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt/40: $url is not ready yet; waiting 15s"
+            sleep 15
+          done
+          echo "::error title=version never appeared::dsh-cua $version is still not on PyPI after ~10 minutes — refusing to publish a registry record that points at a version which does not exist"
+          exit 1
 
       - name: Authenticate with OIDC and publish
         run: |
