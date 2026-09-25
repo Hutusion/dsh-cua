@@ -8,6 +8,9 @@ WHY THIS FILE EXISTS
 
 WHAT IT COVERS (all pure logic / OS primitives, no window, no cursor, no focus)
     * the package imports and its console entry point resolves
+    * the identity a client is shown in initialize/serverInfo — the version must be ours,
+      not the MCP SDK's (FastMCP never passes one through, so the low-level Server falls
+      back to pkg_version("mcp"))
     * SkyshotDiffer index correctness — the P0-3 regression (a printed diff index must
       address the element it names)
     * tree-line escaping — the other half of P0-3 (application text cannot forge a line)
@@ -38,7 +41,7 @@ SRC = os.path.join(REPO, "src")
 # version) would otherwise be imported instead of the checkout under test, and the run
 # would silently verify the wrong code. Order matters — do not "try the package first".
 sys.path.insert(0, SRC)
-from dsh_cua import arbiter, bridge, uia, server as srv  # noqa: E402
+from dsh_cua import arbiter, bridge, uia, server as srv, __version__  # noqa: E402
 
 failures = []
 
@@ -108,6 +111,29 @@ check("dsh_cua.uia imports", uia is not None)
 check("dsh_cua.server exposes main()", callable(getattr(srv, "main", None)))
 check("SkyshotDiffer is available", hasattr(uia, "SkyshotDiffer"))
 check("_line_text is available", hasattr(uia, "_line_text"))
+
+# ------------------------------------------------- client-visible identity (the 0.3.4 fix)
+# FastMCP takes no `version` parameter and never passes one to the low-level Server, which
+# then falls back to pkg_version("mcp"). From 0.1.0 through 0.3.3 every client was therefore
+# shown the SDK's version (e.g. "1.28.1") as if it were this server's. This asserts what a
+# CLIENT receives through a real initialize — not the attribute we happened to assign, and
+# not a source-level grep. It needs no desktop, so it can live in CI.
+print("\nID — the identity a client is shown (initialize/serverInfo)")
+try:
+    import asyncio
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    async def _handshake():
+        async with create_connected_server_and_client_session(srv.mcp) as session:
+            return await session.initialize()
+
+    _info = asyncio.run(_handshake()).serverInfo
+    check("serverInfo.version equals dsh_cua.__version__",
+          _info.version == __version__, f"client sees {_info.version!r}, package is {__version__!r}")
+    check("serverInfo.name identifies the project", _info.name == "dsh-cua", repr(_info.name))
+except Exception as exc:  # noqa: BLE001 - a handshake that cannot complete IS the failure
+    check("initialize returns serverInfo", False, f"{type(exc).__name__}: {exc}")
 
 # --------------------------------------------------- differ: index correctness (P0-3)
 print("\nT3 — a diff's printed index addresses the element it names")

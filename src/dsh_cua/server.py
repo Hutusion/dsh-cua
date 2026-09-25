@@ -4,7 +4,7 @@ import base64, time, ctypes, ctypes.wintypes, sys, os
 from typing import Any
 from mcp.server.fastmcp import FastMCP
 
-from . import WINDOWS, WINDOWS_ONLY_MESSAGE
+from . import WINDOWS, WINDOWS_ONLY_MESSAGE, __version__
 
 if WINDOWS:
     from .bridge import (
@@ -81,7 +81,35 @@ def window_pid(hwnd: int) -> int:
     ctypes.windll.user32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
     return pid.value
 
-mcp = FastMCP(name="Win32 Desktop Automation", instructions="Win32 bridge for Windows desktop automation.")
+# `instructions` is the one channel that reaches a model WITHOUT the companion skill being
+# installed, so it carries the doctrine rather than a one-line label: observe first, prefer
+# element actions, and never read `action_sent` as proof that anything happened.
+mcp = FastMCP(
+    name="dsh-cua",
+    website_url="https://github.com/Hutusion/dsh-cua",
+    instructions=(
+        "Windows desktop automation over UI Automation. Observe before you act: tool_skyshot "
+        "reads a window as a compact, diffable text tree (orders of magnitude cheaper than a "
+        "screenshot), and tool_find_elements / tool_element_at_point name controls inside it. "
+        "Prefer element actions (tool_element_action, tool_element_action_at): they deliver UIA "
+        "patterns, so they never steal focus and do not care about z-order. Reach for "
+        "tool_click_at or tool_send_keys only when no element path exists - those inject real "
+        "physical input, are hard-gated, and yield to the human. Every action returns a receipt: "
+        "action_sent means the call was accepted, effect_verified means the effect happened. "
+        "They are different things, and action_sent=true is never a claim that it worked. If a "
+        "call comes back user-active, a person is at the keyboard: do not retry in a loop - wait, "
+        "or switch to the element path. The 12 read-only tools are safe to call at any time."
+    ),
+)
+
+# serverInfo.version must be OUR version, not the SDK's. FastMCP has no `version` parameter and
+# never passes one to the low-level Server, which then falls back to pkg_version("mcp") - so from
+# 0.1.0 through 0.3.3 every client displayed this server as e.g. "1.28.1". Declared after
+# construction, getattr-guarded: if a future SDK stops exposing _mcp_server we lose the label,
+# not the server. tests/ci-desktop-free.py asserts the client-visible value equals __version__.
+_low = getattr(mcp, "_mcp_server", None)
+if _low is not None:
+    _low.version = __version__
 
 @mcp.tool(description="List all visible top-level windows with title, hwnd, PID, position and size, sorted largest first. Read-only — safe while the user works.")
 def tool_list_windows(filter_title: str = "") -> dict[str, Any]:

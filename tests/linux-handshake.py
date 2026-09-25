@@ -238,6 +238,14 @@ def main() -> int:
             fail("initialize returned no serverInfo", json.dumps(init)[:800] + "\n" + server.diagnostics())
         print(f"serverInfo  : {info}")
 
+        # The version a client is shown must be OURS, not the MCP SDK's. FastMCP has no
+        # `version` parameter and never passes one to the low-level Server, which then falls
+        # back to pkg_version("mcp") — so 0.1.0 through 0.3.3 all reported the SDK's version
+        # (e.g. "1.28.1") as if it were this server's.
+        if info and info.get("version") != __version__:
+            fail("serverInfo.version is not dsh_cua.__version__",
+                 f"server says {info.get('version')!r}, package is {__version__!r}")
+
         # MCP requires this notification between initialize and any other request; without it
         # the server answers tools/list with an empty list rather than an error.
         server.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

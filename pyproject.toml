@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dsh-cua"
-version = "0.3.3"
-description = "Windows computer-use MCP server: accessibility-first element actions, skyshot text trees, guarded raw input, and a cross-session arbiter that yields to the human"
+version = "0.3.4"
+description = "Windows computer-use MCP server for dsh (DeepSeek Harness) — client-neutral, works with any stdio MCP client. Accessibility-first element actions, skyshot text trees, guarded raw input, and a cross-session arbiter that yields to the human."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
