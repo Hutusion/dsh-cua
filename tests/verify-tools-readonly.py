@@ -208,6 +208,13 @@ def main() -> int:
                   "client_width" in r["data"] and "dpi" in r["data"],
                   json.dumps(r["data"].get("dpi"))[:200])
 
+        # hwnd=0 means "whatever is in the foreground" — server.py routes that through its own
+        # foreground_window() helper. That helper is the path that was broken OFF Windows, so it
+        # gets exercised ON Windows too: a guard added there must not break the real call.
+        r = result_of(server.call("tool_get_window_rect", {"hwnd": 0}),
+                      "tool_get_window_rect")
+        check("hwnd=0 falls back to the foreground window instead of failing", r["ok"], r["detail"])
+
         r = result_of(server.call("tool_skyshot", {"hwnd": hwnd}), "tool_skyshot")
         check("tool_skyshot answers", r["ok"], r["detail"])
         if r["ok"] and r["data"]:

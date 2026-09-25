@@ -49,9 +49,34 @@ else:
     arbiter = _stub("the coexistence arbiter")
     uia = _stub("UI Automation")
 
+
+def _require_windows(what: str) -> None:
+    """Raise the documented refusal when this process is not on Windows.
+
+    The guard above stands in for the IMPORTS (bridge, uia, arbiter). This file's own Win32
+    helpers are defined AFTER it and therefore survive it, and they touch `ctypes.windll`
+    directly — which does not exist off Windows. Without this they raise
+    `module 'ctypes' has no attribute 'windll'` instead of the message this package promises.
+
+    Measured on ubuntu-latest (run 36105307183): tool_capture_window and tool_get_window_rect did
+    exactly that, because hwnd=0 sends them to the foreground fallback before any guarded call.
+    checking WINDOWS rather than `hasattr(ctypes, "windll")` keeps the reason in one sentence and
+    one place.
+    """
+    if not WINDOWS:
+        raise RuntimeError(f"{what}: {WINDOWS_ONLY_MESSAGE}")
+
+
+def foreground_window() -> int:
+    """The foreground window's handle — the fallback the tools use when they are given hwnd=0."""
+    _require_windows("the Win32 bridge")
+    return ctypes.windll.user32.GetForegroundWindow()
+
+
 def window_pid(hwnd: int) -> int:
     """Owning process of a window — used to assert the element path addresses the
     window the caller named (ZCode's `assertClickElementOwnerPid`)."""
+    _require_windows("the Win32 bridge")
     pid = ctypes.wintypes.DWORD()
     ctypes.windll.user32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
     return pid.value
@@ -84,7 +109,7 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     rect = get_window_rect(hwnd)
     dpi_gate = require_verified_frame_pixels("capture_window")
     t0 = time.perf_counter()
@@ -155,7 +180,7 @@ def tool_send_keys(keys: list[str] = None, hwnd: int = 0, title: str = "", use_a
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     if not keys: return {"success": False, "error": "No keys provided"}
     t0 = time.perf_counter()
     outcome = {}
@@ -184,7 +209,7 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     t0 = time.perf_counter()
 
     attempts = []
@@ -257,7 +282,7 @@ def tool_type_text(text: str = "", hwnd: int = 0, title: str = "", delay_ms: int
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     t0 = time.perf_counter()
     out = type_text(hwnd, text, delay_ms/1000.0)
     if not out.get("ok"):
@@ -269,7 +294,7 @@ def tool_get_window_rect(hwnd: int = 0, title: str = "") -> dict[str, Any]:
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     return {"success": True, "hwnd": hwnd, **get_window_rect(hwnd)}
 
 @mcp.tool(description="Identify the UI element at a PHYSICAL screen point via Windows UI Automation. Returns its name, role, rect, and which actions it supports, plus an opaque `ref` for read_element. This is how you turn 'what I see in the screenshot' into something addressable without clicking: coordinates here are the same space as capture bounds (both physical pixels). Read-only — moves no cursor and changes no focus.")
@@ -299,7 +324,7 @@ async def tool_skyshot(hwnd: int = 0, title: str = "", disable_diff: bool = Fals
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     res = uia.skyshot(hwnd, disable_diff=disable_diff, include_offscreen=include_offscreen,
                       include_values=include_values, max_nodes=max_nodes, max_depth=max_depth)
     return {"success": bool(res.get("ok")), **res}
@@ -320,7 +345,7 @@ async def tool_find_elements(hwnd: int = 0, title: str = "", role: str = "",
     if hwnd == 0 and title:
         hwnd = find_window(title)
         if hwnd is None: return {"success": False, "error": f"Window not found: '{title}'"}
-    if hwnd == 0: hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd == 0: hwnd = foreground_window()
     res = uia.find_elements(hwnd, role=role or None, name_contains=name_contains or None,
                             automation_id=automation_id or None,
                             include_offscreen=include_offscreen, max_results=max_results)
