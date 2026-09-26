@@ -3,6 +3,10 @@
 [![ci](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/Hutusion/dsh-cua/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dsh-cua)](https://pypi.org/project/dsh-cua/)
 [![Hutusion/dsh-cua MCP server](https://glama.ai/mcp/servers/Hutusion/dsh-cua/badges/score.svg)](https://glama.ai/mcp/servers/Hutusion/dsh-cua)
+[![LINUX DO](https://img.shields.io/badge/LINUX-DO-FFB003.svg?logo=data:image/svg%2bxml;base64,DQo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiPjxwYXRoIGQ9Ik00Ni44Mi0uMDU1aDYuMjVxMjMuOTY5IDIuMDYyIDM4IDIxLjQyNmM1LjI1OCA3LjY3NiA4LjIxNSAxNi4xNTYgOC44NzUgMjUuNDV2Ni4yNXEtMi4wNjQgMjMuOTY4LTIxLjQzIDM4LTExLjUxMiA3Ljg4NS0yNS40NDUgOC44NzRoLTYuMjVxLTIzLjk3LTIuMDY0LTM4LjAwNC0yMS40M1EuOTcxIDY3LjA1Ni0uMDU0IDUzLjE4di02LjQ3M0MxLjM2MiAzMC43ODEgOC41MDMgMTguMTQ4IDIxLjM3IDguODE3IDI5LjA0NyAzLjU2MiAzNy41MjcuNjA0IDQ2LjgyMS0uMDU2IiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZWNlY2VjO2ZpbGwtb3BhY2l0eToxIi8+PHBhdGggZD0iTTQ3LjI2NiAyLjk1N3EyMi41My0uNjUgMzcuNzc3IDE1LjczOGE0OS43IDQ5LjcgMCAwIDEgNi44NjcgMTAuMTU3cS00MS45NjQuMjIyLTgzLjkzIDAgOS43NS0xOC42MTYgMzAuMDI0LTI0LjM4N2E2MSA2MSAwIDAgMSA5LjI2Mi0xLjUwOCIgc3R5bGU9InN0cm9rZTpub25lO2ZpbGwtcnVsZTpldmVub2RkO2ZpbGw6IzE5MTkxOSIgZmlsbC1vcGFjaXR5PSIxIi8+PHBhdGggZD0iTTcuOTggNzAuOTI2YzI3Ljk3Ny0uMDM1IDU1Ljk1NCAwIDgzLjkzLjExM1E4My40MjYgODcuNDczIDY2LjEzIDk0LjA4NnEtMTguODEgNi41NDQtMzYuODMyLTEuODk4LTE0LjIwMy03LjA5LTIxLjMxNy0yMS4yNjIiIHN0eWxlPSJzdHJva2U6bm9uZTtmaWxsLXJ1bGU6ZXZlbm9kZDtmaWxsOiNmOWFmMDA7ZmlsbC1vcGFjaXR5PSIxIi8+PC9zdmc+)](https://linux.do)
+
+<!-- LINUX DO 徽章不是装饰：linux.do 的「开源推广」通道要求项目反向链接认可社区。
+     见 https://linux.do/t/topic/1776670 -->
 
 <!-- mcp-name: io.github.Hutusion/dsh-cua -->
 
