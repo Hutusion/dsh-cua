@@ -112,6 +112,39 @@ image→screen mapping (`bounds`, `scale`, `dpi_verified`), and the model suppli
 Also not provided: record-and-replay, and an isolation sandbox. There are better-suited tools
 for those.
 
+## FAQ
+
+**Why not run the agent on a second desktop or a virtual display, so it never touches mine?**
+
+Because Windows has nothing to build that on, and the mobile design that does work rests on
+exactly the missing piece. On Android an app can create a `VirtualDisplay` and address input at
+it — an input event carries a display id, so the agent's taps are routed to its own screen and
+the human's touchscreen never notices. **Windows routes input per desktop, not per display:** a
+desktop has one input queue and one cursor position.
+
+That makes the obvious analogues dead ends:
+
+| Idea | Why it does not isolate |
+|---|---|
+| Add a virtual monitor (an indirect display driver) | Another canvas, not another cursor — the pointer still has a single position across all monitors |
+| A Windows virtual desktop (`Win+Ctrl+D`) | A view switch inside the same session: same input queue, same cursor |
+| A second session (RDP, or another user) | Isolation is real, but client Windows allows one interactive session per user at a time — connecting remotely locks the console, so the human loses their screen, which was the whole point |
+| A hidden Win32 desktop (`CreateDesktop`) | The agent would get its own input queue and cursor, but its windows are invisible, so it can only drive instances it launched — not the program you are looking at. (Inferred from the window-station/desktop model; not measured here.) |
+
+So the conflict is not a gap in this implementation, it is an OS constraint: **Windows has no
+second cursor.** Given that, yielding is the only correct response — and most calls never get
+near the problem, because they inject no input at all:
+
+- `element_action` / `element_action_at` — a UIA pattern is delivered to the element: no physical
+  input, no cursor movement, no focus change. These are the paths that "can run while the user
+  types".
+- `type_text` — a window-targeted `PostMessage`, not global keystrokes.
+- Every read-only tool (`skyshot`, `element_at_point`, `capture_window`, …) — touches nothing.
+
+Exactly two paths inject physical input, and they exist because canvas-, game- and
+Chromium-internal surfaces expose no element to address: the raw-event path of `tool_click_at`,
+and the global hotkeys of `tool_send_keys`. Those two are what the arbiter guards.
+
 ## Install
 
 You need **Windows x64 + an interactive desktop session + Python ≥3.10** to actually drive a
