@@ -239,9 +239,22 @@ def window_at_point(screen_x: int, screen_y: int) -> int:
     """Top-level window that owns a screen point — i.e. who receives a click there."""
     return _root(int(user32.WindowFromPoint(POINT(screen_x, screen_y))))
 
+def _foreground_hwnd() -> int:
+    """The raw foreground window as an int, with NULL normalised to 0.
+
+    `GetForegroundWindow` is declared with a POINTER restype (`w.HWND`, line 62), so a NULL
+    return arrives as Python `None` rather than 0 — and `int(None)` raises `TypeError`. There
+    are legitimate moments with no foreground window at all, and this value feeds `type_text`,
+    `click_at`, `send_keys` and `send_alt_key`, so the failure reached clients as an MCP
+    `isError` on a tool call instead of a clean refusal. `uia.py` had this guard; its two
+    counterparts here did not (and one of them, inside `_ensure_visible`, is reached by every
+    one of those four tools).
+    """
+    return int(user32.GetForegroundWindow() or 0)
+
 def foreground_root() -> int:
     """Top-level window that currently has focus (keyboard input goes here)."""
-    return _root(int(user32.GetForegroundWindow()))
+    return _root(_foreground_hwnd())
 
 def cursor_pos() -> tuple[int, int]:
     """Current cursor position. Read-only; used to prove a dry run moved nothing."""
@@ -292,7 +305,7 @@ def _ensure_visible(hwnd: int) -> dict:
                 "addressed": hwnd}
     # Foreground lock workaround: share input state with the foreground thread so
     # this thread is allowed to change the foreground window, then detach.
-    fg = int(user32.GetForegroundWindow())
+    fg = _foreground_hwnd()
     fg_thread = user32.GetWindowThreadProcessId(w.HWND(fg), None) if fg else 0
     my_thread = kernel32.GetCurrentThreadId()
     attached = False

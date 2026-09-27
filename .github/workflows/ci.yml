@@ -97,6 +97,17 @@ jobs:
       - name: Win32 prototypes the read-back path needs are declared
         run: python tests/check-ctypes-prototypes.py
 
+      # The negative control, run by CI rather than only by hand. That checker's whole premise is
+      # "a checker nobody has seen fail is a checker that may not work", so leaving its own
+      # self-test out of CI would be the same mistake one level up.
+      - name: ... and that prototype checker still fails when it should
+        run: python tests/check-ctypes-prototypes.py --self-test
+
+      # A NULL foreground window used to reach clients as an MCP isError (int(None) TypeError).
+      # This is desktop-free: it substitutes a stub for user32 rather than hunting for the state.
+      - name: A NULL foreground window is refused, not a crash
+        run: python tests/check-foreground-null.py
+
       # linux-handshake.py SKIPs on Windows, so this is the only place its reply classifier can
       # be guarded on the platform it is written on. It runs the classifier against payloads
       # recorded from real runs, including the 0.3.2 defect.

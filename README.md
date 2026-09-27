@@ -217,8 +217,18 @@ read screenshots (`tr-route-settings.yml`).
 [`skill/computer-use/SKILL.md`](https://github.com/Hutusion/dsh-cua/blob/main/skill/computer-use/SKILL.md) is the companion doctrine for using
 these tools: the observe → locate → act → verify loop, receipt semantics, retry safety, and the
 discipline of coexisting with a human. The model can use the tools without it, but with it the
-model **picks the right path by itself** — the measured difference is large. Copy it into your
-skills directory:
+model **picks the right path by itself** — the measured difference is large.
+
+**The skill lives in this repository, not in the package** — `uvx` and `pip` do not put a `skill/`
+directory on your disk, so the `cp` below only works from a checkout. Without one, fetch the file:
+
+```bash
+mkdir -p ~/.dsh/skills/computer-use
+curl -fsSL https://raw.githubusercontent.com/Hutusion/dsh-cua/main/skill/computer-use/SKILL.md \
+  -o ~/.dsh/skills/computer-use/SKILL.md      # use ~/.agents/skills/ for Claude Code
+```
+
+From a clone, copy the directory instead:
 
 ```bash
 # Claude Code / generic agents

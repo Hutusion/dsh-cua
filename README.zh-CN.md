@@ -174,7 +174,18 @@ python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
 
 [`skill/computer-use/SKILL.md`](skill/computer-use/SKILL.md) 是配套的使用教条：观察→定位→动作→复核
 的循环、回执语义、重试安全、与人类共存的纪律。没有它模型也能用工具，但有了它模型会**自己选对
-路径**——实测差别很大。把它复制进你的技能目录即可：
+路径**——实测差别很大。
+
+**技能在本仓库里，不在安装包里**——`uvx` 和 `pip` 都不会往你磁盘上放 `skill/` 目录，所以下面的
+`cp` 只对从源码 clone 的人有效。没有 checkout 的话，直接把文件取下来：
+
+```bash
+mkdir -p ~/.dsh/skills/computer-use
+curl -fsSL https://raw.githubusercontent.com/Hutusion/dsh-cua/main/skill/computer-use/SKILL.md \
+  -o ~/.dsh/skills/computer-use/SKILL.md      # Claude Code 用 ~/.agents/skills/
+```
+
+从 clone 的话，复制目录即可：
 
 ```bash
 # Claude Code / 通用 agents
