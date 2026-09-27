@@ -267,18 +267,29 @@ def _ensure_visible(hwnd: int) -> dict:
     ignored that return value and proceeded to click, which is how a click could
     land on a different window while reporting success. So: check the result,
     retry through `AttachThreadInput`, and report honestly.
+
+    Every foreground COMPARISON goes through `_root()`. `foreground_root()` is always a
+    TOP-LEVEL window, so comparing it directly against a CHILD hwnd could never be equal — this
+    function used to return `{"raised": false, "method": "failed"}` while the foreground
+    genuinely WAS that child, under-reporting the raise it had just performed. (The
+    `SetForegroundWindow`/`BringWindowToTop` calls below still pass the handle that was given,
+    child or not: Windows resolves those to the top-level ancestor itself, and passing the child
+    is what makes the reported `addressed` value the one the caller asked about.)
     """
     import time
     h = w.HWND(hwnd)
-    if user32.IsIconic(h):
-        user32.ShowWindow(h, SW_RESTORE)
+    want = _root(hwnd)
+    root = w.HWND(want)
+    if user32.IsIconic(root):
+        user32.ShowWindow(root, SW_RESTORE)
         time.sleep(0.15)
-    if foreground_root() == hwnd:
-        return {"raised": True, "method": "already-foreground"}
+    if foreground_root() == want:
+        return {"raised": True, "method": "already-foreground", "addressed": hwnd}
     ok = bool(user32.SetForegroundWindow(h))
     time.sleep(0.05)
-    if foreground_root() == hwnd:
-        return {"raised": True, "method": "SetForegroundWindow", "returned": ok}
+    if foreground_root() == want:
+        return {"raised": True, "method": "SetForegroundWindow", "returned": ok,
+                "addressed": hwnd}
     # Foreground lock workaround: share input state with the foreground thread so
     # this thread is allowed to change the foreground window, then detach.
     fg = int(user32.GetForegroundWindow())
@@ -290,16 +301,17 @@ def _ensure_visible(hwnd: int) -> dict:
     try:
         ok2 = bool(user32.SetForegroundWindow(h))
         time.sleep(0.05)
-        if foreground_root() != hwnd:
+        if foreground_root() != want:
             user32.BringWindowToTop(h)
             time.sleep(0.05)
     finally:
         if attached:
             user32.AttachThreadInput(fg_thread, my_thread, False)
-    raised = foreground_root() == hwnd
+    raised = foreground_root() == want
     return {"raised": raised, "method": "AttachThreadInput" if raised else "failed",
             "set_foreground_returned": ok, "attached": attached,
-            "foreground_now": foreground_root()}
+            "foreground_now": foreground_root(), "addressed": hwnd,
+            "addressed_root": want}
 
 # ---- public API ----
 def find_window(title_substring: str = "") -> Optional[int]:
@@ -625,7 +637,6 @@ def send_alt_key(hwnd: int, key: str) -> dict:
     if not gate.get("ok"):
         return {"ok": False, "reason": gate.get("reason"), "hwnd": hwnd, "key": key,
                 "arbiter": arbiter.receipt(gate),
-                "arbiter": {k: v for k, v in gate.items() if k != "release"},
                 "error": gate.get("error")}
     try:
         _send_alt_key_impl(hwnd, key)
@@ -734,13 +745,203 @@ def _click_impl(hwnd: int, client_x: int, client_y: int,
     result["reason"] = "clicked"
     return result
 
+# ---- text-control addressing -------------------------------------------------------
+#
+# A `WM_CHAR` posted to a TOP-LEVEL window never reaches its child edit control. The
+# frame's window procedure does not forward it, and neither does the dialog manager for
+# dialog-class windows. Measured on 5/5 targets — this project's own test fixture plus
+# charmap, mstsc, 7-Zip File Manager and Everything — with the character provably arriving
+# at the frame and not being routed onwards. `PostMessage` is not a routed-input API.
+#
+# So a caller who names a WINDOW (which is all `find_window` / `list_windows` return) had
+# its text posted into nothing. These helpers find the control that actually owns the text
+# and read it back, so the receipt can say whether the text landed rather than only that
+# something was posted.
+
+WM_GETTEXT = 0x000D
+WM_GETTEXTLENGTH = 0x000E
+
+# Class-name prefixes of the classic controls that own editable text.
+_TEXT_CLASS_PREFIXES = ("edit", "richedit", "textbox", "scintilla", "textedit")
+
+
+class GUITHREADINFO(Structure):
+    _fields_ = [("cbSize", w.DWORD), ("flags", w.DWORD),
+                ("hwndActive", w.HWND), ("hwndFocus", w.HWND),
+                ("hwndCapture", w.HWND), ("hwndMenuOwner", w.HWND),
+                ("hwndMoveSize", w.HWND), ("hwndCaret", w.HWND),
+                ("rcCaret", RECT)]
+
+
+user32.GetClassNameW.restype = c_int
+user32.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, c_int]
+# `GetWindowThreadProcessId` is declared once, near the top of this module — not repeated here.
+user32.GetGUIThreadInfo.restype = c_bool
+user32.GetGUIThreadInfo.argtypes = [w.DWORD, POINTER(GUITHREADINFO)]
+user32.EnumChildWindows.restype = c_bool
+user32.EnumChildWindows.argtypes = [w.HWND, EnumWindowsProc, w.LPARAM]
+user32.GetWindowLongW.restype = c_int
+user32.GetWindowLongW.argtypes = [w.HWND, c_int]
+# SendMessageTimeoutW, NOT SendMessageW. The synchronous call has no bound: a target whose
+# thread is not pumping messages (hung UI, modal loop, suspended) makes it wait forever, and
+# these reads sit inside `type_text`'s `try` — so a block there also means
+# `finally: gate["release"]()` never runs and the cross-process mutex stays held, making every
+# later mutating call from every session sit out its full MUTEX_TIMEOUT_MS and fail. Measured on
+# a suspended target: this returns in 1200 ms with 0, while the synchronous version was still
+# blocked when its child process was killed at 8 s. Note the two out-parameters of the API: the
+# RETURN value is only a success flag (0 = the control did not answer), and the message result
+# arrives in `lpdwResult` — which must be a pointer-sized buffer, since it is a DWORD_PTR.
+#   c_ssize_t rather than c_longlong: the result type is pointer-sized, and c_longlong would be
+# wrong on a 32-bit interpreter.
+user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+user32.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT,
+                                       POINTER(ctypes.c_size_t)]
+
+# SMTO_ABORTIFHUNG returns immediately when Windows already considers the target hung; the
+# timeout bounds the case where it does not yet think so. Both are needed — a thread suspended
+# in a debugger or parked in a nested modal loop is not "hung" by Windows' definition.
+SMTO_ABORTIFHUNG = 0x0002
+_SEND_TIMEOUT_MS = 1500
+
+
+def window_class_name(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(w.HWND(hwnd), buf, 256)
+    return buf.value
+
+
+def _is_text_control(hwnd: int) -> bool:
+    return window_class_name(hwnd).lower().startswith(_TEXT_CLASS_PREFIXES)
+
+
+GWL_STYLE = -16
+ES_READONLY = 0x0800
+# ES_READONLY is a style bit whose MEANING is defined per window class, so only classes that
+# actually define it may be judged by it: Scintilla implements read-only through
+# SCI_SETREADONLY rather than a style bit, and a third-party "TextBox"/"TextEdit" class is free
+# to give 0x0800 an unrelated meaning. Reading it for those classes does not merely mislabel a
+# control — it picks the WRONG TARGET in `find_text_target`, silently.
+_ES_READONLY_CLASSES = ("edit", "richedit")
+
+
+def _is_read_only_control(hwnd: int) -> Optional[bool]:
+    """True/False when this class's read-only style is knowable, None when it is not.
+
+    None is NOT False. "Unknown" must not be read as "writable", and it must not be read as
+    "read-only" either: the caller excludes only controls that are KNOWN to be read-only, because
+    excluding an unknown one could discard the only writable control in the window.
+
+    This exists because a window holding both an input box and a read-only text area (an ordinary
+    layout) would otherwise resolve to the read-only one and report `no-effect` for a call that
+    would have worked against the other.
+    """
+    if not window_class_name(hwnd).lower().startswith(_ES_READONLY_CLASSES):
+        return None
+    try:
+        return bool(int(user32.GetWindowLongW(w.HWND(hwnd), GWL_STYLE)) & ES_READONLY)
+    except Exception:
+        return None
+
+
+def _read_control_text(hwnd: int) -> Optional[str]:
+    """A text control's own text, read across the process boundary under a TIMEOUT.
+
+    Returns None when the control could not be read, which is a different thing from "" — a
+    control that WAS read and is genuinely empty. Keeping those two apart is why this no longer
+    uses the synchronous `SendMessageW`: that call returned the same "" for a destroyed handle as
+    for an empty control, so "I could not read it" reached the caller as "your text did not land"
+    — reported as `reason: no-effect` with an error message that blamed a read-only control.
+
+    `WM_GETTEXT`/`WM_GETTEXTLENGTH` are among the messages Windows marshals across processes, so
+    this can read another process's control. The return value is only a success flag and the
+    result arrives in `lpdwResult` — measured on a real, empty, cross-process `RICHEDIT50W`:
+    ret=1, lpdwResult=0. An empty control is therefore not mistaken for an unreadable one.
+    """
+    res = ctypes.c_size_t(0)
+    if not user32.SendMessageTimeoutW(w.HWND(hwnd), WM_GETTEXTLENGTH, 0, 0,
+                                      SMTO_ABORTIFHUNG, _SEND_TIMEOUT_MS, byref(res)):
+        return None
+    n = int(res.value)
+    if n == 0:
+        return ""
+    if n < 0 or n > 4_000_000:
+        return None
+    buf = ctypes.create_unicode_buffer(n + 1)
+    if not user32.SendMessageTimeoutW(w.HWND(hwnd), WM_GETTEXT, n + 1,
+                                      ctypes.cast(buf, ctypes.c_void_p).value,
+                                      SMTO_ABORTIFHUNG, _SEND_TIMEOUT_MS, byref(res)):
+        return None
+    return buf.value
+
+
+def _thread_focus(top: int) -> int:
+    """The control this window's thread currently has keyboard focus on, or 0."""
+    tid = user32.GetWindowThreadProcessId(w.HWND(top), None)
+    if not tid:
+        return 0
+    gti = GUITHREADINFO()
+    gti.cbSize = sizeof(GUITHREADINFO)
+    if not user32.GetGUIThreadInfo(tid, byref(gti)):
+        return 0
+    return int(gti.hwndFocus or 0)
+
+
+def find_text_target(top: int) -> "tuple[int, str]":
+    """The control inside `top` that owns typed text, and how it was chosen.
+
+    Returns (0, "") when the window holds no WndProc-backed text control — a browser or
+    Electron window is the common case, and those are addressed as a whole.
+    """
+    if _is_text_control(top):
+        return top, "input-is-a-text-control"
+    # The thread's own focused control is where a user's keystrokes would go, so it beats
+    # position when a window holds several text controls.
+    focus = _thread_focus(top)
+    if focus and _root(focus) == _root(top) and _is_text_control(focus):
+        return focus, "thread-focus"
+    found: list = []
+
+    def cb(child, _lp):
+        if _is_text_control(int(child)):
+            found.append(int(child))
+            if len(found) >= 8:
+                return False
+        return True
+
+    user32.EnumChildWindows(w.HWND(top), EnumWindowsProc(cb), 0)
+    if not found:
+        return 0, ""
+    # Only controls KNOWN to be read-only are excluded (`is not True`). An unrecognised class
+    # returns None, and treating unknown as read-only would discard a control that may well
+    # accept text — a worse error than trying the wrong one, because the receipt can only report
+    # what actually happened to the target that was chosen.
+    writable = [c for c in found if _is_read_only_control(c) is not True]
+    if writable:
+        return writable[0], "first-writable-descendant"
+    return found[0], "first-descendant (all known read-only)"
+
+
 def type_text(hwnd: int, text: str, delay: float = 0.01) -> dict:
-    """Type into a window char-by-char via PostMessage (window-targeted).
+    """Type into a window's text control, char-by-char via PostMessage.
 
     MUTATING (soft gate): takes the cross-process mutex and may raise the window
     (_ensure_visible), but skips the input-quiet wait — PostMessage does not enter
     the user's input stream. Note the honest limit: the raise can still take focus
-    while the user is typing; that is what a future prevent_activation gate is for."""
+    while the user is typing; that is what a future prevent_activation gate is for.
+
+    The text control is RESOLVED rather than assumed, and the effect is READ BACK. A
+    caller can only name a top-level window (`find_window` / `list_windows` return
+    top-level handles) and a `WM_CHAR` posted to one never reaches its child edit, so this
+    used to post into nothing and return `ok: True`. See the block comment above.
+
+    What `effect_verified` means here, precisely: the control's text was read before and
+    after, and it CHANGED. That is not proof that these characters are the change — the window
+    has just been raised and a human may be typing into it, and an application may update its
+    own control — so a length that does not account for the text sent is reported in
+    `effect_note` instead of being presented as success. `None` means the text could not be
+    read back (no WndProc-backed control in the window, or one that did not answer within the
+    timeout) and the effect is UNCONFIRMED, which is not the same as failed.
+    """
     gate = arbiter.admit_mutating(hard=False)
     if not gate.get("ok"):
         return {"ok": False, "reason": gate.get("reason"), "hwnd": hwnd,
@@ -748,13 +949,66 @@ def type_text(hwnd: int, text: str, delay: float = 0.01) -> dict:
                 "arbiter": arbiter.receipt(gate),
                 "error": gate.get("error")}
     try:
-        h = w.HWND(hwnd); _ensure_visible(hwnd)
+        fg_before = foreground_root()
+        raise_info = _ensure_visible(hwnd)
+        target, resolved_by = find_text_target(hwnd)
+        dest = target or hwnd
+        before = _read_control_text(dest) if target else None
         for ch in text:
-            user32.PostMessageW(h, WM_CHAR, ord(ch), 0)
+            user32.PostMessageW(w.HWND(dest), WM_CHAR, ord(ch), 0)
             if delay > 0: time.sleep(delay)
-        return {"ok": True, "reason": "typed", "hwnd": hwnd,
-                "arbiter": arbiter.receipt(gate),
-                "typed": len(text), "text_length": len(text)}
+        after = _read_control_text(dest) if target else None
+        effect_verified = None
+        if before is not None and after is not None:
+            effect_verified = after != before
+        out = {"ok": True, "reason": "typed", "hwnd": hwnd, "target_hwnd": dest,
+               "resolved_by": resolved_by or None,
+               "typed": len(text), "text_length": len(text),
+               "effect_verified": effect_verified,
+               "foreground_changed": foreground_root() != fg_before,
+               "raise": raise_info,
+               "arbiter": arbiter.receipt(gate)}
+        if effect_verified is False:
+            out["ok"] = False
+            out["reason"] = "no-effect"
+            # Deliberately neutral. `after == before` is evidence that the text did not land and
+            # no evidence at all about WHY; the previous wording led with "the control is
+            # read-only", which was a guess presented as a diagnosis.
+            out["error"] = (f"posted {len(text)} character(s) to {dest} but its text did not "
+                            f"change (still {before[:60]!r}). The text did not land; this "
+                            f"receipt does not say why. Known causes, in no particular order: "
+                            f"the control is read-only or disabled; a maximum length or an "
+                            f"input mask rejected the characters; the control was destroyed "
+                            f"between the two reads; or it does not consume posted WM_CHAR.")
+            out["before"] = before[:80]
+            out["after"] = after[:80]
+        elif effect_verified is None:
+            if not target:
+                out["effect_note"] = (
+                    "the characters were posted to the window itself: no WndProc-backed text "
+                    "control was found inside it, so there is nothing to read back and the "
+                    "effect is UNCONFIRMED. Pass the control's own hwnd if you have it.")
+            else:
+                out["effect_note"] = (
+                    f"the control {dest} did not answer WM_GETTEXT within {_SEND_TIMEOUT_MS} "
+                    f"ms, so the effect is UNCONFIRMED — which is not the same as failed. It "
+                    f"may be busy, hung or already destroyed.")
+        else:
+            # `after != before` proves the control's text CHANGED. It does not prove that OUR
+            # characters are the change: `_ensure_visible` has just brought this window forward
+            # and a human may be typing into it, and the application may update the control on
+            # its own. Length is the cheap check available, so a mismatch is reported rather than
+            # presenting a coincidental change as this call's success.
+            delta = len(after) - len(before)
+            if delta != len(text):
+                out["effect_note"] = (
+                    f"the control's text changed, but its length moved by {delta:+d} where "
+                    f"{len(text)} character(s) were sent, so the change is real but it is not a "
+                    f"plain insertion of this text. It may have been truncated by a maximum "
+                    f"length, partly rejected by an input mask, inserted over a selection, or "
+                    f"changed by something else entirely (the window was just raised, and a "
+                    f"human may be typing in it). before={before[:40]!r} after={after[:40]!r}")
+        return out
     finally:
         gate["release"]()
 

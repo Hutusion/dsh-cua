@@ -50,7 +50,8 @@ A stdio MCP server exposing 19 tools. Every tool name is prefixed `tool_`, exact
   collapse / scroll_into_view / focus, delivered straight to the UIA element, so they
   **never steal focus and never care about z-order**
 - **Other mutating calls** (soft gate too: the mutex, but **no** human-contention yield):
-  `tool_type_text` (targeted PostMessage), `tool_clipboard_write`, `tool_open_application`. They
+  `tool_type_text` (targeted PostMessage with `effect_verified`), `tool_clipboard_write`,
+  `tool_open_application`. They
   synthesize no physical input, so they do **not** wait for you to stop working — and a clipboard
   write still destroys whatever you last copied, so announce it when you do.
 - **Physical input** (hard gate: serialized across agents **and** yields to the human): exactly two
@@ -64,6 +65,14 @@ A stdio MCP server exposing 19 tools. Every tool name is prefixed `tool_`, exact
 call while someone is using the machine. Two of them have a side effect worth knowing:
 `tool_capture_window` writes the screenshot to disk (`save_path`; a temp file when omitted), and
 `tool_skyshot` updates the server-side diff baseline it diffs the next shot against.
+
+A small tree is not proof of an empty window. `tool_skyshot` and `tool_find_elements` report
+`minimized`, because a minimized window may be showing "nothing is displayed" rather than "nothing
+is there" — and how much it hides depends on the application, which is why the receipt reports the
+state instead of guessing at the cause. Measured here: an Edge window minimized before anything read
+it exposes its browser chrome and **no page at all** (and `include_offscreen` does not recover it),
+Explorer falls from 40 elements to 8 whenever it is minimized, and Notepad is unaffected. Restore the
+window once and read it again if the result matters.
 
 Every action returns a **receipt** rather than a self-reported success: `action_sent` /
 `effect_verified` / `foreground_changed` / `user-active` / `arbiter-busy`. "The call was
@@ -138,7 +147,10 @@ near the problem, because they inject no input at all:
 - `element_action` / `element_action_at` — a UIA pattern is delivered to the element: no physical
   input, no cursor movement, no focus change. These are the paths that "can run while the user
   types".
-- `type_text` — a window-targeted `PostMessage`, not global keystrokes.
+- `type_text` — a window-targeted `PostMessage`, not global keystrokes. It resolves the text
+  control inside the window first (a top-level window does not forward `WM_CHAR` to its child
+  edit) and reads that control back, so the receipt carries `effect_verified` rather than only
+  reporting that something was posted.
 - Every read-only tool (`skyshot`, `element_at_point`, `capture_window`, …) — touches nothing.
 
 Exactly two paths inject physical input, and they exist because canvas-, game- and

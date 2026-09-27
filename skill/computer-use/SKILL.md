@@ -63,6 +63,13 @@ before acting, or you will press whatever element now holds that position.
 your session, so check it when the answer matters. (`next_index` is a legacy field with no
 addressing meaning.)
 
+**A small tree is not proof of an empty window.** `minimized: true` means the window is minimized,
+and a minimized window may be showing "nothing is displayed" rather than "nothing is there" — how
+much it hides depends on the application (an Edge window minimized before anything read it exposes
+its browser chrome and **no page at all**; Explorer drops from 40 elements to 8; Notepad is
+unaffected). `include_offscreen` does not recover it. Restore the window once and read again before
+concluding anything — and never report "the window is empty" from a small tree alone.
+
 ### `mcp__win32__tool_find_elements` — when you know what you want
 
 `role` (lowercase, as printed by skyshot: `button`, `edit`, `document`, `list_item`, …) and/or
@@ -97,6 +104,13 @@ is never raised, z-order never matters, and the user's focus is not stolen.
 - Actions: `press`, `set_value`, `select`, `toggle`, `expand`, `collapse`, `scroll_into_view`, `focus`.
   Only actions the element actually advertises are accepted; the refusal lists what it does support.
 - **Typing: prefer `set_value` on the element.** It is semantic and needs no focus.
+- **When there is no Value pattern to set**, use `mcp__win32__tool_type_text`. It resolves the
+  text control *inside* the window itself — the focused control, else the first **writable**
+  descendant — and reads that control back, so the receipt carries `effect_verified`,
+  `resolved_by` and `target_hwnd` instead of echoing your argument back at you. A top-level
+  `WM_CHAR` never reaches a child edit control, so passing a window handle is fine: the tool
+  finds the control. `effect_verified: null` means no control was readable (a browser or
+  Electron window) and the effect is **unconfirmed**, not proven.
 
 **Coordinate clicks are the fallback** — `mcp__win32__tool_click_at`. It tries the element path first
 and reports which it used in `method` (`ax_press` = focus-free, `raw_event` = cursor injection). The

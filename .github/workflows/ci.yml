@@ -90,6 +90,13 @@ jobs:
       - name: No ctypes name is taken from the module that lacks it
         run: python tests/check-ctypes-names.py
 
+      # The check above polices the ctypes NAMESPACES; every `user32.X.argtypes = ...` line is an
+      # attribute on an object, so it is outside that checker entirely and deleting one is
+      # invisible to it. This one fails when a prototype the text-addressing and read-back path
+      # depends on is not declared — a missing prototype truncates pointer arguments on 64-bit.
+      - name: Win32 prototypes the read-back path needs are declared
+        run: python tests/check-ctypes-prototypes.py
+
       # linux-handshake.py SKIPs on Windows, so this is the only place its reply classifier can
       # be guarded on the platform it is written on. It runs the classifier against payloads
       # recorded from real runs, including the 0.3.2 defect.

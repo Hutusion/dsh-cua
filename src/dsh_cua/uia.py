@@ -414,6 +414,41 @@ def _foreground_root() -> int:
         return 0
 
 
+_isiconic_declared = False
+
+
+def _is_minimized(hwnd: int) -> bool:
+    """Whether the window is minimized.
+
+    Reported because a minimized window may be showing "nothing is displayed" rather than
+    "nothing is there", and the rendered text cannot distinguish the two. What was actually
+    measured, per application — because the behaviour is NOT uniform, and an earlier version of
+    this note explained it with a mechanism that only holds for one of them:
+
+      * Chromium / Edge, minimized BEFORE anything queried it: browser chrome and no page
+        document at all. Restoring builds the tree, and once built it survives being minimized
+        again. `include_offscreen` does not recover it.
+      * Explorer: degraded every time it is minimized — a built tree went 40 elements -> 8, and
+        back to 40 when restored.
+      * Notepad: unaffected (35 elements minimized, 35 restored), which is why the note is a
+        caution rather than a claim.
+    """
+    global _isiconic_declared
+    try:
+        u = ctypes.windll.user32
+        if not _isiconic_declared:
+            # Declared once, not on every call. `ctypes.windll.user32` is a cached loader object
+            # whose functions are cached on it, so `bridge.py` — which declares this same
+            # function — is writing to the SAME object. Re-assigning both on every call is
+            # wasted work and an invitation for the two modules to disagree.
+            u.IsIconic.restype = ctypes.c_int
+            u.IsIconic.argtypes = [ctypes.c_void_p]
+            _isiconic_declared = True
+        return bool(u.IsIconic(ctypes.c_void_p(int(hwnd))))
+    except Exception:
+        return False
+
+
 def _wrapper_for(el):
     """pywinauto's wrapper around a raw element, which carries the `iface_*` adapters.
 
@@ -791,9 +826,21 @@ def _walk(hwnd: int, *, max_nodes: int, max_depth: int, include_offscreen: bool,
           include_values: bool) -> tuple[list[dict], bool]:
     """Walk the control-view tree, returning (records, truncated).
 
-    ControlViewWalker rather than RawViewWalker: on Edge the control view was 100 nodes
-    where the raw view was 550, and the extra 450 were separators, groups and layout
-    scaffolding. The control view is the readable surface.
+    ControlViewWalker rather than RawViewWalker — re-measured, and kept. The justification
+    that used to be here ("the extra 450 were separators, groups and layout scaffolding") is
+    NOT accurate: the extra nodes are real named elements — collapsed Edge menus and side
+    panes ('下载', '标签页栏', '缩放: 100%'), wallet/translate surfaces that are not displayed
+    at all, and the documents of BACKGROUND TABS. The decision still holds, for reasons the
+    measurement gives directly:
+
+      * neither view is a superset. On ZCode the control view published 77 named elements
+        and the raw view only 26 — switching to raw would LOSE readable content there while
+        gaining undisplayed menu items on Edge.
+      * on Edge the raw view is 7x the size (26 -> 196 nodes on an app window, 122 -> 400 on
+        a tabbed one) and most of that growth is UI that is not on screen.
+
+    `tests/verify-key-routing.py inventory --compare-views` prints both views for every
+    window with identical pruning, so this is re-checkable rather than asserted.
     """
     uia = _uia()
     walker = uia.ControlViewWalker
@@ -959,6 +1006,9 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
         return {"ok": False, "reason": "uia_unavailable", "error": _IMPORT_ERROR}
     root = _root_hwnd(hwnd)
     key = str(root)
+    # Sampled BEFORE the walk rather than after it: a window minimized (or restored) in between
+    # would get a note that does not describe the tree that was just read.
+    minimized = _is_minimized(root)
     # Chromium answers with a bare container until something asks for the tree.
     warm_up(root)
     try:
@@ -981,7 +1031,7 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
     # them before acting, and refuses when they changed (see _window_identity).
     _shots[key] = {"records": records, "time": time.time(), "title": title,
                    "identity": _window_identity(root)}
-    return {
+    out = {
         "ok": True,
         "hwnd": root,
         # The window this shot is keyed to. The diff baseline lives in this process and
@@ -1000,7 +1050,24 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
         "next_index": _differ.next_index(key),
         "truncated": truncated,
         "chars": len(rendered["text"]),
+        "minimized": minimized,
     }
+    if minimized:
+        # Neutral on purpose. The first version of this note explained the missing content with
+        # Chromium's build-only-when-visible behaviour and stated it as the reason a tree is
+        # small — but a three-family measurement found that behaviour in Chromium only: Explorer
+        # degrades every time it is minimized (40 -> 8 elements, restored -> 40) while Notepad is
+        # unaffected (35 -> 35). The flag is a fact; the cause is not knowable from here, so the
+        # note says what was measured and what to do about it.
+        out["note"] = (
+            "this window is MINIMIZED. A minimized window can be showing 'nothing is displayed' "
+            "at least as readily as 'nothing is there', and this read cannot tell you which. "
+            "Measured on this machine: an Edge window minimized before anything read it exposed "
+            "its browser chrome and no page at all, and Explorer fell from 40 elements to 8 every "
+            "time it was minimized — while Notepad was unaffected. So a small tree here is not "
+            "evidence that the window is empty. Restore it once and read it again if the result "
+            "matters.")
+    return out
 
 
 def element_action_at(hwnd: int, index: int, action: str, text: Optional[str] = None,
@@ -1103,12 +1170,24 @@ def find_elements(hwnd: int, *, role: Optional[str] = None,
         payload["ref"] = _register(r["element"], payload)
         out_matches.append(payload)
 
-    return {
+    minimized = _is_minimized(root)
+    out = {
         "ok": True,
         "hwnd": root,
         "window_title": _window_title(root),
         "matched": len(matches),
         "returned": len(out_matches),
         "truncated": truncated,
+        "minimized": minimized,
         "elements": out_matches,
     }
+    if minimized:
+        # Same reasoning as skyshot's note: a zero here is ambiguous, and one IsIconic call
+        # resolves which of the two readings applies.
+        out["note"] = (
+            "this window is MINIMIZED, so a zero or small result means 'nothing is displayed' "
+            "at least as readily as 'nothing matches'. A minimized window does not always "
+            "expose its full tree — measured here on Edge and on Explorer, while Notepad was "
+            "unaffected — and no read can build it while the window is minimized. Restore it "
+            "once and search again.")
+    return out

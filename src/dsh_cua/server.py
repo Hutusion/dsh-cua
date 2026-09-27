@@ -304,7 +304,7 @@ async def tool_element_action(ref: str, action: str, text: str = "") -> dict[str
     res = uia.element_action(ref, action, text if text else None)
     return {"success": bool(res.get("ok")), **res}
 
-@mcp.tool(description="Type a text string into a window character-by-character (window-targeted PostMessage, not global keystrokes). MUTATING (soft): serialized across agent sessions; no physical input is injected so it can run while the user types — but the window may be RAISED to foreground, so avoid typing into a window the user is currently working in.")
+@mcp.tool(description="Type a text string into a window character-by-character (window-targeted PostMessage, not global keystrokes). The text control inside the window is resolved automatically — a top-level window does not forward WM_CHAR to its child edit, so passing a window handle alone used to post into nothing — and the control's text is read back so `effect_verified` says whether the text actually landed. MUTATING (soft): serialized across agent sessions; no physical input is injected so it can run while the user types — but the window may be RAISED to foreground, so avoid typing into a window the user is currently working in.")
 def tool_type_text(text: str = "", hwnd: int = 0, title: str = "", delay_ms: int = 10) -> dict[str, Any]:
     if not text: return {"success": False, "error": "No text provided"}
     if hwnd == 0 and title:
@@ -315,7 +315,12 @@ def tool_type_text(text: str = "", hwnd: int = 0, title: str = "", delay_ms: int
     out = type_text(hwnd, text, delay_ms/1000.0)
     if not out.get("ok"):
         return {"success": False, **out, "time_ms": round((time.perf_counter()-t0)*1000, 1)}
-    return {"success": True, "hwnd": hwnd, "text_length": out.get("text_length", len(text)), "time_ms": round((time.perf_counter()-t0)*1000, 1)}
+    # Carry the whole receipt through, the way tool_send_keys does. The success path used
+    # to keep only text_length, which made "posted" and "landed" render identically — the
+    # one action path in the project that asserted nothing.
+    return {"success": True, **out, "hwnd": hwnd,
+            "text_length": out.get("text_length", len(text)),
+            "time_ms": round((time.perf_counter()-t0)*1000, 1)}
 
 @mcp.tool(description="Get detailed position and size info for a window: absolute position, dimensions, and client area size. Read-only.")
 def tool_get_window_rect(hwnd: int = 0, title: str = "") -> dict[str, Any]:
@@ -343,7 +348,7 @@ async def tool_read_element(ref: str) -> dict[str, Any]:
         return {"success": False, **res}
     return {"success": True, **res}
 
-@mcp.tool(description="Read a window's UI as a compact TEXT tree instead of a screenshot — far cheaper than an image, and it names elements a hit-test cannot reach (e.g. an input inside a Chromium page, which element_at_point reports only as the enclosing 'document'). Each line is '{index} {indent}{role} {name}{Value: ...}{(state)}'. Every shot after the first is a DIFF against the previous one: unchanged lines are omitted, '~' marks a changed line, '+' an added one, and removed indices are summarised as ranges. So a second call is usually a few lines, not the whole tree — an unchanged window costs about 100 characters. INDEXES ARE POSITIONAL: each shot numbers the tree it just walked, so a number is only valid against the shot that printed it. '~' and '+' lines carry THIS shot's index and may be acted on; unchanged lines carry no index, so reaching one needs disable_diff=true for a full render. An index read from an older shot is not a durable handle — re-check it with a fresh shot before acting if the window may have changed. The result includes shot_key (the window the diff baseline belongs to — the baseline lives server-side and outlives your session, so this is how you confirm it was taken against the window you meant). Pass include_offscreen=true to include elements that are scrolled out or hidden. NOTE: this reads element VALUES, so the text can contain whatever is on screen in that window. Read-only — no input injection, no focus change; safe to call while the user works.")
+@mcp.tool(description="Read a window's UI as a compact TEXT tree instead of a screenshot — far cheaper than an image, and it names elements a hit-test cannot reach (e.g. an input inside a Chromium page, which element_at_point reports only as the enclosing 'document'). Each line is '{index} {indent}{role} {name}{Value: ...}{(state)}'. Every shot after the first is a DIFF against the previous one: unchanged lines are omitted, '~' marks a changed line, '+' an added one, and removed indices are summarised as ranges. So a second call is usually a few lines, not the whole tree — an unchanged window costs about 100 characters. INDEXES ARE POSITIONAL: each shot numbers the tree it just walked, so a number is only valid against the shot that printed it. '~' and '+' lines carry THIS shot's index and may be acted on; unchanged lines carry no index, so reaching one needs disable_diff=true for a full render. An index read from an older shot is not a durable handle — re-check it with a fresh shot before acting if the window may have changed. The result includes shot_key (the window the diff baseline belongs to — the baseline lives server-side and outlives your session, so this is how you confirm it was taken against the window you meant). Pass include_offscreen=true to include elements that are scrolled out or hidden. The result reports `minimized`, because a minimized window does not always expose its full tree (measured on Edge and on Explorer; Notepad was unaffected) — so a small tree is not proof that the window is empty, and include_offscreen does not recover it. Restore the window once and read again if the result matters. NOTE: this reads element VALUES, so the text can contain whatever is on screen in that window. Read-only — no input injection, no focus change; safe to call while the user works.")
 async def tool_skyshot(hwnd: int = 0, title: str = "", disable_diff: bool = False,
                        include_offscreen: bool = False, include_values: bool = True,
                        max_nodes: int = 800, max_depth: int = 30) -> dict[str, Any]:
@@ -364,7 +369,7 @@ async def tool_element_action_at(hwnd: int, index: int, action: str, text: str =
     res = uia.element_action_at(hwnd, index, action, text if text else None)
     return {"success": bool(res.get("ok")), **res}
 
-@mcp.tool(description="Find UI elements by role and/or name substring and return refs that can be acted on with element_action. This is how you reach an element that cannot be hit-tested — the point of naming it is that you no longer need a pixel. `role` is the lowercase role from skyshot (button, edit, document, list_item, ...). At least one filter is required: an unfiltered call would be a tree dump, so use skyshot for that. Read-only.")
+@mcp.tool(description="Find UI elements by role and/or name substring and return refs that can be acted on with element_action. This is how you reach an element that cannot be hit-tested — the point of naming it is that you no longer need a pixel. `role` is the lowercase role from skyshot (button, edit, document, list_item, ...). At least one filter is required: an unfiltered call would be a tree dump, so use skyshot for that. The result reports `minimized` — a minimized window does not always expose its full tree, so a zero here is not proof that nothing matches. Read-only.")
 async def tool_find_elements(hwnd: int = 0, title: str = "", role: str = "",
                              name_contains: str = "", automation_id: str = "",
                              include_offscreen: bool = True, max_results: int = 20) -> dict[str, Any]:

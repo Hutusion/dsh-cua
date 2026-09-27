@@ -35,8 +35,8 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
 - **元素动作**（软门：跨 agent 串行，无物理输入注入）：`tool_element_action` /
   `tool_element_action_at`——press / set_value / select / toggle / expand / collapse /
   scroll_into_view / focus，直接作用于 UIA 元素，**不抢焦点、不关心 z 序**
-- **其它写入型调用**（同样是软门：只拿互斥量，**不**做人机让行）：`tool_type_text`（PostMessage 定向）、
-  `tool_clipboard_write`、`tool_open_application`。它们不合成物理输入，所以**不会**等你停手——
+- **其它写入型调用**（同样是软门：只拿互斥量，**不**做人机让行）：`tool_type_text`（PostMessage 定向，
+  带回执 `effect_verified`）、`tool_clipboard_write`、`tool_open_application`。它们不合成物理输入，所以**不会**等你停手——
   而剪贴板写入仍会毁掉你上次复制的内容，用之前先声明。
 - **物理输入**（硬门：跨 agent 串行 **且** 人机让行）：只有两样东西和你共用同一个光标与键盘——
   `tool_click_at` 的**裸事件路径**与 `tool_send_keys` 的全局热键。门禁会等机器进入输入静默，
@@ -46,6 +46,12 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
 这里的「只读」指不产生变更动作、不合成输入，所以别人正在用这台机器时也可以调。其中两个有值得知道的
 副作用：`tool_capture_window` 会把截图写到磁盘（`save_path`，省略则写临时文件），`tool_skyshot`
 会更新服务端的 diff 基线。
+
+树小**不等于**窗口是空的。`tool_skyshot` 和 `tool_find_elements` 会回传 `minimized`，因为最小化的
+窗口可能是在说「现在什么都没显示」，而不是「里面什么都没有」—— 而**藏起来多少取决于应用**，所以回执
+报的是状态，不是对原因的猜测。本机实测：一个**在任何人读过它之前**就被最小化的 Edge 窗口只会暴露
+浏览器外壳、**完全没有页面**（`include_offscreen` 也救不回来）；Explorer 每次最小化都从 40 个元素
+掉到 8 个；而 Notepad 不受影响。结果重要的话，把窗口恢复一次再读。
 
 每个动作返回**回执**而非自述成功：`action_sent` / `effect_verified` / `foreground_changed` /
 `user-active` / `arbiter-busy`。「调用被接受」和「效果发生」是两件事——工具替 agent 分清。
@@ -106,7 +112,8 @@ Android 上应用可以创建 `VirtualDisplay`，并且**输入事件带 display
 
 - `element_action` / `element_action_at`——把 UIA pattern 投递给元素：不注入物理输入、不移动
   光标、不改变焦点。这就是那两个「用户打字时也能跑」的路径。
-- `type_text`——窗口定向的 `PostMessage`，不是全局按键。
+- `type_text`——窗口定向的 `PostMessage`，不是全局按键。它会先解析出窗口内真正拥有文字的控件
+  再投递，并把该控件的文字读回，所以回执里的 `effect_verified` 能说明文字到底有没有落地。
 - 所有只读工具（`skyshot`、`element_at_point`、`capture_window` 等）——什么都不碰。
 
 真正注入物理输入的只有两条路径，它们之所以存在，是因为 canvas、游戏、Chromium 内部界面
