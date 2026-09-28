@@ -140,6 +140,23 @@ That makes the obvious analogues dead ends:
 | A second session (RDP, or another user) | Isolation is real, but client Windows allows one interactive session per user at a time — connecting remotely locks the console, so the human loses their screen, which was the whole point |
 | A hidden Win32 desktop (`CreateDesktop`) | The agent would get its own input queue and cursor, but its windows are invisible, so it can only drive instances it launched — not the program you are looking at. (Inferred from the window-station/desktop model; not measured here.) |
 
+That table is about **input**, and it is worth being exact about what a second display *does*
+buy, because the answer is not "nothing". Measured on Edge with an isolated profile
+(`tests/verify-visible-vs-foreground.py`): Chromium builds a page's accessibility tree for a
+window that is merely **shown**. A window minimized before any query reported **no** page; the
+same window reported a named page as soon as it was shown — while **not the active window**
+(`GetGUIThreadInfo(hwndActive)` false) and **fully covered** (0% of its area on top). Every state
+was read back from the OS rather than assumed, and a `ForegroundWatch` around each walk (1.4-2.7M
+samples, foreground unchanged) shows the read takes no focus at all. A browser window parked on a
+second display is therefore readable with `skyshot` while your focus never leaves your screen.
+
+Input does not survive the move. A `WM_CHAR` posted to that same window is **accepted** by
+`PostMessage` and changes nothing — covered or uncovered — while the identical post to the same
+window *when it is active* inserts the character. So a second display buys the **read** and not
+the **act**, and the surfaces that need acting on (Chromium internals, canvas, games) are exactly
+the ones needing the activation it cannot provide. The constraint is input, and for input there
+is still one cursor and one foreground window per desktop.
+
 So the conflict is not a gap in this implementation, it is an OS constraint: **Windows has no
 second cursor.** Given that, yielding is the only correct response — and most calls never get
 near the problem, because they inject no input at all:
