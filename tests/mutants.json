@@ -1,0 +1,138 @@
+[
+ {
+  "id": "m01",
+  "file": "check-docs-consistency.py",
+  "old": "    srv = os.path.join(repo, \"server.json\")\n    if os.path.exists(srv):",
+  "new": "    srv = os.path.join(repo, \"server.json\")\n    if False:  # MUTANT: the server.json version source is dark",
+  "expect": "caught",
+  "why": "delete a data source: server.json version entries never reach `found`"
+ },
+ {
+  "id": "m02",
+  "file": "check-docs-consistency.py",
+  "old": "    if os.path.exists(init):",
+  "new": "    if False:  # MUTANT: the __init__.py version source is dark",
+  "expect": "caught",
+  "why": "delete a data source: __init__.py version entries never reach `found`"
+ },
+ {
+  "id": "m03",
+  "file": "check-docs-consistency.py",
+  "old": "        for m in re.finditer(r\"(\\d+)\\s+read-only tools?\\b\", read(srv)):",
+  "new": "        if False:  # MUTANT: the server.py read-only-count claim source is gone",
+  "expect": "escape",
+  "why": "delete a data source: the checker never reads the read-only count from server.py; no fixture carries such a claim, so no direction notices (KNOWN BLIND SPOT)"
+ },
+ {
+  "id": "m04",
+  "file": "check-docs-consistency.py",
+  "old": "r\"\\badmit_mutating\\(\\s*hard\\s*=\\s*True\\s*\\)\"",
+  "new": "r\"mutant_placebo_pattern_never_matches\"",
+  "expect": "caught",
+  "why": "shrink a scan: hard-gate call sites stop being counted; the good fixture (README says one, code has one) then false-positives"
+ },
+ {
+  "id": "m05",
+  "file": "check-docs-consistency.py",
+  "old": "r\"(?<![\\w/])((?:skill|src|tests|examples|docs|\\.github|\\.dsh)/[A-Za-z0-9_./-]+)\"",
+  "new": "r\"mutant_placebo_pattern_never_matches\"",
+  "expect": "caught",
+  "why": "shrink a scan: README path references are no longer scanned; a known-bad README stops failing"
+ },
+ {
+  "id": "m06",
+  "file": "check-docs-consistency.py",
+  "old": "        if len(value) > 100:",
+  "new": "        if len(value) > 239:  # MUTANT: threshold raised to the known-bad value",
+  "expect": "caught",
+  "why": "constant changed: description-length threshold raised so the 239-char regression that once shipped passes"
+ },
+ {
+  "id": "m07",
+  "file": "check-docs-consistency.py",
+  "old": "QUALIFIERS = (\"只读\", \"观测\", \"软门\", \"硬门\", \"级别\", \"read-only\", \"observation\", \"gate\")",
+  "new": "QUALIFIERS = ()  # MUTANT: subset claims are no longer filtered",
+  "expect": "caught",
+  "why": "constant changed: the qualifier whitelist is emptied, turning subset counts into total claims (the exact false positive measured before)"
+ },
+ {
+  "id": "m08",
+  "file": "check-docs-consistency.py",
+  "old": "record(\"FAIL\", \"version consistency\",",
+  "new": "record(\"PASS\", \"version consistency\",",
+  "expect": "caught",
+  "why": "downgrade FAIL to PASS: version disagreement reported as green"
+ },
+ {
+  "id": "m09",
+  "file": "check-docs-consistency.py",
+  "old": "record(\"FAIL\", \"advertised tool count == registered\",",
+  "new": "record(\"PASS\", \"advertised tool count == registered\",",
+  "expect": "caught",
+  "why": "downgrade FAIL to PASS: wrong tool-count claims reported as green"
+ },
+ {
+  "id": "m10",
+  "file": "check-docs-consistency.py",
+  "old": "\"disagreement: \" + \", \".join(\"%s=%s\" % (k, v) for k, v in sorted(found.items()))",
+  "new": "\"\"",
+  "expect": "escape",
+  "why": "clear a detail: the FAIL still fires but no longer says WHICH sources disagree; nothing asserts detail content (KNOWN BLIND SPOT: detail is what lands in the CI annotation)"
+ },
+ {
+  "id": "m11",
+  "file": "check-docs-consistency.py",
+  "old": "    check_uncalled_tools,\n",
+  "new": "",
+  "expect": "caught",
+  "why": "remove a check: `advertised tools are exercised by tests` stops running at all"
+ },
+ {
+  "id": "m12",
+  "file": "check-docs-consistency.py",
+  "old": "    if substantive == 0 and results:",
+  "new": "    if False:  # MUTANT: an all-SKIP run is green again",
+  "expect": "caught",
+  "why": "short-circuit a verdict branch: the empty-run guard is disabled"
+ },
+ {
+  "id": "m13",
+  "file": "check-docs-consistency.py",
+  "old": "    return verdict()",
+  "new": "    return 0  # MUTANT: main() can never fail",
+  "expect": "escape",
+  "why": "main() returns 0 unconditionally: reachable only in normal runs, which --self-test never drives (KNOWN BLIND SPOT)"
+ },
+ {
+  "id": "m14",
+  "file": "check-docs-consistency.py",
+  "old": "        elif status == \"SKIP\":\n            skipped += 1",
+  "new": "        elif status == \"SKIP\":\n            pass  # MUTANT: skips are no longer counted",
+  "expect": "caught",
+  "why": "short-circuit a verdict branch: the partial-coverage notice disappears and SKIP becomes invisible in CI"
+ },
+ {
+  "id": "m15",
+  "file": "check-docs-consistency.py",
+  "old": "sys.stdout.write(\"::%s title=%s::%s\\n\" % (level, title, message))",
+  "new": "sys.stdout.write(\"::%s::%s\\n\" % (level, message))",
+  "expect": "caught",
+  "why": "clear a detail: the annotation loses its title; the channel still emits but says less"
+ },
+ {
+  "id": "m16",
+  "file": "check-docs-consistency.py",
+  "old": "    \"tool_click_at\": \"needs a real desktop: raw_event path moves the physical cursor\",\n",
+  "new": "",
+  "expect": "escape",
+  "why": "constant changed: an exemption is silently removed; no fixture defines an exempted-uncalled tool, so no direction notices (KNOWN BLIND SPOT)"
+ },
+ {
+  "id": "m17",
+  "file": "check-docs-consistency.py",
+  "old": "    if failed:\n        print(\"%d check(s) failed — the docs and the code disagree.\" % failed)\n        return 1",
+  "new": "    if failed:\n        print(\"%d check(s) failed — the docs and the code disagree.\" % failed)\n        return 0  # MUTANT: FAILs printed but exit 0",
+  "expect": "escape",
+  "why": "short-circuit a verdict branch: failures printed but exit 0, CI stays green; direction 3 only drives verdict() with PASS/SKIP (KNOWN BLIND SPOT)"
+ }
+]

@@ -30,6 +30,12 @@ Run:  python tests/check-docs-consistency.py [--repo <path>]
 known way and asserts the checks fail on it.  A checker nobody has seen fail is a
 checker that may not work -- the same reason `check-ctypes-prototypes.py` has one.
 
+The corpus in ``tests/mutants.json`` is the durable form of that negative
+control: ``--self-test`` replays every mutant against a copy of this file
+itself in a subprocess and asserts the caught/escape set equals the recorded
+expectations, in BOTH directions, so the claim is recomputed on every run
+instead of asserted from memory.
+
 ## Why SKIP is treated as a first-class outcome, not a pass
 
 Several checks cannot run against an arbitrary tree: no `server.json` to measure, no
@@ -56,6 +62,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -717,9 +724,136 @@ def run_self_test() -> int:
             print("  the annotation channel emits, is suppressed on demand, and an "
                   "all-SKIP run is red.\n")
 
+        # ---- direction 4: every data source must be individually load-bearing ----
+        # REPRODUCED ESCAPE.  Found by an independent auditor on 2026-09-28 and reproduced here
+        # before fixing: the bad fixture carries TWO independent version disagreements, so
+        # disabling the `server.json` read entirely still left a disagreement -> direction 1
+        # still fired -> `--self-test` still printed PASSED.  On a repo where ONLY server.json
+        # had drifted, the mutated checker reported "all 9 checks passed" while the original
+        # reported `[FAIL] version consistency`.  A fixture with REDUNDANT disagreement cannot
+        # notice a data source going dark, and no amount of mutation testing against THAT
+        # fixture will find it -- which is why the author's own "8/8 mutants caught" was not
+        # evidence of sensitivity.  So: drift exactly one source per fixture.
+        print("-- direction 4: each version source must be individually load-bearing --")
+        drift_cases = [
+            ("pyproject.toml", 'version = "1.0.0"'),
+            (os.path.join("src", "dsh_cua", "__init__.py"), '__version__ = "1.0.0"'),
+            ("server.json", '"version": "1.0.0"'),
+        ]
+        blind = []
+        for rel, needle in drift_cases:
+            fx = os.path.join(tmp, "drift_" + rel.replace(os.sep, "_").replace(".", ""))
+            build_good_fixture(fx)
+            fp = os.path.join(fx, rel)
+            src_text = open(fp, encoding="utf-8").read()
+            if needle not in src_text:
+                blind.append("%s: needle %r not in the fixture (fixture changed?)" % (rel, needle))
+                continue
+            open(fp, "w", encoding="utf-8").write(
+                src_text.replace(needle, needle.replace("1.0.0", "1.0.1"), 1))
+            results.clear()
+            check_version_consistency(fx)
+            if not [s for s, _, _ in results if s == "FAIL"]:
+                blind.append("%s drifted ALONE -> the check stayed silent" % rel)
+            else:
+                print("  %-34s drifted alone -> FAIL (correct)" % rel)
+
+        # A check that stopped being called at all shrinks `results` instead of failing, so the
+        # count is asserted too -- otherwise deleting a check from CHECKS is invisible.
+        results.clear()
+        for fn in CHECKS:
+            fn(good)
+        if len(results) != len(CHECKS):
+            blind.append("%d of %d checks reported; a check did not run at all"
+                         % (len(results), len(CHECKS)))
+        results.clear()
+
+        for b in blind:
+            print("  SELF-TEST FAILED: %s" % b)
+        if blind:
+            rc = 1
+        else:
+            print("  all %d version sources are load-bearing on their own, and all %d checks ran.\n"
+                  % (len(drift_cases), len(CHECKS)))
+
+        # ---- direction 5: replay the mutant corpus (CI recomputes the claim) ----
+        # tests/mutants.json is the durable form of "the self-test catches real
+        # regressions": each record is a string edit modeling a known failure class,
+        # together with the verdict this self-test MUST produce.  Every mutant is
+        # replayed against a copy of THIS file in a subprocess, and the caught set
+        # must equal the set of `expect: caught` records, in BOTH directions: a
+        # `caught` mutant that escapes means sensitivity regressed; an `escape`
+        # mutant that gets caught means a blind spot closed -- update
+        # tests/mutants.json (expect: "caught") so the record stays true.
+        print("-- direction 5: mutant replay against this file's own --self-test --")
+        mpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutants.json")
+        if os.environ.get("DSH_MUTANT_REPLAY") == "1":
+            # A mutated copy must not replay the corpus again: one mutation at a
+            # time, or the mutant tree explodes exponentially.
+            print("  skipped: this file is itself the mutant under test (DSH_MUTANT_REPLAY=1)")
+            print()
+        elif not os.path.isfile(mpath):
+            print("  SELF-TEST FAILED: mutant corpus not found: %s" % mpath)
+            rc = 1
+        else:
+            with open(mpath, encoding="utf-8-sig") as fh:
+                corpus = json.load(fh)
+            src_me = read(os.path.abspath(__file__))
+            env = dict(os.environ)
+            env["DSH_MUTANT_REPLAY"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
+            outcomes: list[tuple[str, str, str]] = []
+            for mu in corpus:
+                mid, expect = str(mu.get("id", "?")), str(mu.get("expect", "?"))
+                if mu.get("file") != "check-docs-consistency.py":
+                    outcomes.append((mid, expect, "bad-target"))
+                    print("  %-6s NO-RUN: unknown target file %r" % (mid, mu.get("file")))
+                    continue
+                n = src_me.count(mu["old"])
+                if n != 1:
+                    # Asserted here rather than trusted: a mutation that does not
+                    # apply would otherwise look like a pass -- tested nothing.
+                    outcomes.append((mid, expect, "no-op"))
+                    print("  %-6s NO-RUN: 'old' occurs %d times in the checker (must be 1)"
+                          % (mid, n))
+                    continue
+                sane = "".join(ch if ch.isalnum() else "_" for ch in mid)
+                mf = os.path.join(tmp, "mutant_%s.py" % sane)
+                open(mf, "w", encoding="utf-8").write(src_me.replace(mu["old"], mu["new"], 1))
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, mf, "--self-test"],
+                        capture_output=True, text=True, timeout=120,
+                        encoding="utf-8", errors="replace", env=env,
+                    )
+                    out = (proc.stdout or "") + (proc.stderr or "")
+                    actual = "caught" if (proc.returncode != 0 or "SELF-TEST FAILED" in out) else "escape"
+                except subprocess.TimeoutExpired:
+                    actual = "caught"  # a mutated checker that hangs is caught, loudly
+                outcomes.append((mid, expect, actual))
+                if actual == expect:
+                    print("  %-6s expect=%-6s actual=%-6s ok" % (mid, expect, actual))
+                else:
+                    print("  %-6s expect=%-6s actual=%-6s MISMATCH" % (mid, expect, actual))
+                    if expect == "caught":
+                        print("  SELF-TEST FAILED: %s escaped -- sensitivity regressed (%s)"
+                              % (mid, mu.get("why", "")))
+                    else:
+                        print("  SELF-TEST FAILED: %s is now caught -- a blind spot closed;"
+                              " update tests/mutants.json (expect: 'caught')" % mid)
+            n_caught = sum(1 for _mid, _exp, a in outcomes if a == "caught")
+            print()
+            print("  corpus: %d mutants, %d caught, %d escaped"
+                  % (len(outcomes), n_caught, len(outcomes) - n_caught))
+            if any(e != a for _mid, e, a in outcomes):
+                rc = 1
+            else:
+                print()
+
         if rc == 0:
             print("SELF-TEST PASSED: %d checks fired on the bad fixture, 0 fired on the good one,\n"
-                  "                  and the SKIP/empty-run reporting behaves as documented."
+                  "                  the SKIP/empty-run reporting behaves as documented, and every\n"
+                  "                  version source is individually load-bearing."
                   % len(expected_failures))
         return rc
     finally:
