@@ -105,9 +105,10 @@ jobs:
 
       # The docs-vs-code checker polices the version number, the advertised tool count, the
       # hard-gate count, the README's paths, and the two READMEs agreeing with each other.
-      # It was written, was listed in AGENTS.md as something CI runs, and was wired into
-      # nothing -- the same "the doc says one thing and the code says another" drift it exists
-      # to catch, one level up.  It only runs here because the repository now carries it.
+      # It was written, was listed in the project's agent handbook as something CI runs, and
+      # was wired into nothing -- the same "the doc says one thing and the code says another"
+      # drift it exists to catch, one level up.  It only runs here because the repository now
+      # carries it.
       - name: Docs still describe the code
         run: python tests/check-docs-consistency.py
 

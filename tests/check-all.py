@@ -4,7 +4,7 @@
 `check-*.py` are the desktop-free assertions and `ci-desktop-free.py` is the desktop-free
 main suite.  The `verify-*.py` scripts in the same directory need a live interactive
 desktop -- they synthesise real input and move the cursor -- so they are deliberately NOT
-run here (see AGENTS.md section 1); they are run by hand on a machine with a desktop.
+run here; they are run by hand on a machine with a desktop.
 
 Discovery is by filename rather than a hardcoded list, so a newly added checker cannot be
 forgotten.  That property caused a real defect the first time it was written, and the two
