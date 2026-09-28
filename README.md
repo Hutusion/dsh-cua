@@ -196,6 +196,15 @@ near the problem, because they inject no input at all:
   control inside the window first (a top-level window does not forward `WM_CHAR` to its child
   edit) and reads that control back, so the receipt carries `effect_verified` rather than only
   reporting that something was posted.
+  **One measured limit, on Chromium:** a `WM_CHAR` posted to a Chromium window that is **not the
+  active window** is accepted by `PostMessage` and changes nothing, while the identical post to
+  the same window *when it is active* inserts the character
+  (`tests/verify-visible-vs-foreground.py`). So on a background browser window, expect the text
+  **not** to appear — and read the receipt: you get `effect_verified: null` (**unconfirmed**)
+  rather than a false `ok`. **Not measured:** which control the resolver actually picks inside a
+  *live page* (Chromium's render widget is not an `EDIT`-class control, so the landing point may
+  fall back to the window itself). The receipt's `resolved_by` / `target_hwnd` tell you which it
+  was — that is the cheap way to settle it against your own target.
 - Every read-only tool (`skyshot`, `element_at_point`, `capture_window`, …) — touches nothing.
 
 Exactly two paths inject physical input, and they exist because canvas-, game- and
