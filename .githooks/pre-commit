@@ -1,0 +1,29 @@
+#!/bin/sh
+# Run every desktop-free checker before a commit lands.  Versioned on purpose: a hook in
+# .git/hooks is invisible to git and disappears on the next clone.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+# Bypass (for a deliberately unfinished local commit only, never for a real one):
+#     git commit --no-verify
+#
+# POSIX sh, not PowerShell: Git for Windows runs hooks through its bundled sh.exe.
+# Reference: tests/check-all.py -- it discovers tests/check-*.py and runs each one's
+# --self-test as well.
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+# `python` is not guaranteed to exist (a bare Windows box may only have `py`), and a hook
+# that blocks every commit because of a missing interpreter trains people to pass
+# --no-verify, which loses the check entirely.  So probe, and fail loudly if none is there.
+if command -v python >/dev/null 2>&1; then
+    exec python "$root/tests/check-all.py"
+elif command -v py >/dev/null 2>&1; then
+    exec py "$root/tests/check-all.py"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 "$root/tests/check-all.py"
+fi
+
+echo "pre-commit: no python/py/python3 on PATH; the desktop-free checkers did NOT run." >&2
+echo "pre-commit: install Python, or commit with --no-verify if you accept that." >&2
+exit 1

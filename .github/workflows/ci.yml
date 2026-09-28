@@ -103,6 +103,17 @@ jobs:
       - name: ... and that prototype checker still fails when it should
         run: python tests/check-ctypes-prototypes.py --self-test
 
+      # The docs-vs-code checker polices the version number, the advertised tool count, the
+      # hard-gate count, the README's paths, and the two READMEs agreeing with each other.
+      # It was written, was listed in AGENTS.md as something CI runs, and was wired into
+      # nothing -- the same "the doc says one thing and the code says another" drift it exists
+      # to catch, one level up.  It only runs here because the repository now carries it.
+      - name: Docs still describe the code
+        run: python tests/check-docs-consistency.py
+
+      - name: ... and that docs checker still fails when it should
+        run: python tests/check-docs-consistency.py --self-test
+
       # A NULL foreground window used to reach clients as an MCP isError (int(None) TypeError).
       # This is desktop-free: it substitutes a stub for user32 rather than hunting for the state.
       - name: A NULL foreground window is refused, not a crash
