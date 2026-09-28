@@ -157,6 +157,34 @@ the **act**, and the surfaces that need acting on (Chromium internals, canvas, g
 the ones needing the activation it cannot provide. The constraint is input, and for input there
 is still one cursor and one foreground window per desktop.
 
+One qualification, because "my browser is on a second display and works fine" is a true report of
+a *different* path. All of the above is about **OS-level injection**, and it does not generalise to
+the browser's own protocol. Measured on the same machine, with a headed Edge window driven over CDP
+(`Input.dispatchMouseEvent`, which is what Playwright's `page.mouse.click` sends): the click arrived
+as a **trusted** event, the system cursor did not move by a single pixel (`GetCursorPos` identical
+before and after), the foreground window did not change, and a further click still landed **after
+the window had been minimized** (`IsIconic` true, foreground on another window). CDP injects into
+the browser's own input pipeline, above the OS input queue, so the one-cursor/one-foreground rule
+does not reach it at all — and neither does it reach anything else addressed through an
+application's own API instead of through the screen. (The page's `document.visibilityState` still
+read `visible` while minimized; that part is an artefact of the flags Playwright launches Chromium
+with, not general Chromium behaviour. Delivering the click is a protocol property, independent of it.)
+
+What decides the outcome is **which layer the input enters at**:
+
+| Route | Cursor / foreground needed | Crosses a display or occlusion boundary |
+|---|---|---|
+| An application's own protocol (CDP, Playwright, a DOM/JS event, an app API) | no — nothing OS-level is injected | yes, and the window need not even be visible |
+| `element_action` (a UIA pattern delivered to an element) | no — but the window must exist and expose an element | yes |
+| `PostMessage` to a window (`type_text`) | measured on Chromium: yes — the target must be **active** for the text to appear | no |
+| Physical injection (`SendInput`, the raw-event path of `click_at`, `send_keys`) | yes — one cursor and one foreground window for the whole desktop | no |
+
+So for a **page**, "put the browser on the virtual display" is a good answer, and this project does
+not compete with it: a page is already its own addressable, scriptable surface. dsh-cua is for the
+targets that have no such surface — Explorer, native dialogs, Office, canvas and games,
+applications with no scripting API — where OS input is the only route there is, and that route is
+exactly the one a second display does not help. Both statements are true.
+
 So the conflict is not a gap in this implementation, it is an OS constraint: **Windows has no
 second cursor.** Given that, yielding is the only correct response — and most calls never get
 near the problem, because they inject no input at all:
