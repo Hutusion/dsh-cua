@@ -8,6 +8,19 @@
 > 细节一律在 `..\dsh-devlog\docs\` 里，按下面的索引按需读。**不要把大段内容抄进本文件**——
 > 单一事实源是这个项目最容易死的地方（见 `..\dsh-devlog\docs\lessons.md` 的"文档漂移"专题）。
 
+> 🚦 **开工前（30 秒，三步 —— 别跳过第 2 步）**
+>
+> 1. **闸门**：`..\dsh-devlog\checks\check-agent-index.py` 与 `tests\check-all.py` 必须全绿才动手。
+>    **空输出 / SKIP 都不算通过**——"什么也没做"和"通过了"在输出上无法区分。
+> 2. **先问系统**：读 `..\dsh-devlog\docs\open-items.md`，确认这件事**有没有人已经做过、正在做、
+>    或明确决定不做**。这一条挡的是两件真实发生过的事：**重复劳动**，以及**错过别人正在做的事**。
+> 3. **收尾回写**：改完回头动 `..\dsh-devlog\docs\status.md`——它和 `open-items.md` 一样
+>    **没有断言保护、会静默腐烂**。
+>
+> 更全的清单在 `..\dsh-devlog\docs\templates\agent-onboarding-prompt.md`：那份是写给"新 agent"的，
+> 但它的**索引表**与**开工自检**对续做的 agent 一样适用。
+> （这三步此前只写在那个模板里，靠"记得去读"兜——实测兜不住，所以搬到这里。）
+
 ## 1. 环境与命令
 
 需要 **Windows** + **Python ≥ 3.10**（CI 跑 3.10 与 3.12）。桌面相关的测试需要**真实的交互式桌面会话**。
@@ -102,7 +115,7 @@ docs/            **不在本仓库里** —— 知识层故意留在 `..\dsh-dev
 | 当前状态、还有什么没做完 | `..\dsh-devlog\docs\status.md`、`..\dsh-devlog\docs\open-items.md` |
 | 排查一个可能已经踩过的坑 | `..\dsh-devlog\docs\lessons.md`（含"明确不算缺陷的"清单） |
 | 硬事实速查（版本、渠道、文件、平台约束） | `..\dsh-devlog\docs\reference.md` |
-| 这段历史的来龙去脉（DSH：4 天 / 175 轮） | `..\dsh-devlog\build\periods\period_01..08.md` |
+| 这段历史的来龙去脉（DSH：4 天 / 174 轮） | `..\dsh-devlog\build\periods\period_01..08.md` |
 | **换 harness 之前**的历史（ZCode，09-05 ~ 09-24） | `..\dsh-devlog\build\periods\period_pre01..08.md`；坑表 `..\dsh-devlog\docs\environment-pitfalls-zcode.md` |
 
 > **为什么上面每条都写 `..\dsh-devlog\docs\` 而不是 `docs/`**：知识层**故意不进本仓库**。
