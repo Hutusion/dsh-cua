@@ -611,9 +611,23 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
     if effect_verified is False:
         out["ok"] = False
         out["reason"] = "state_unchanged"
-        out["error"] = (f"{action} was accepted but {state_prop} did not change "
-                        f"(still {str(after)[:60]!r}); the pattern is inert for this "
-                        f"element")
+        # Neutral on purpose: the two reads prove the state does not satisfy this action's
+        # criterion, and say nothing about WHY. The previous wording ended with "the pattern
+        # is inert for this element" — a guess presented as a diagnosis, the same mistake the
+        # `no-effect` text in bridge.py was rewritten to avoid. The criterion is per-action
+        # (EFFECT_STATE), which is also why it is named here instead of being described as
+        # "did not change": where `expect` is None a CHANGE is required, so an element that
+        # was ALREADY in the requested state lands here (expand / collapse / set_value);
+        # `select` checks the target state instead, so an already-selected element reports
+        # success. That asymmetry is deliberate but easy to misread.
+        criterion = ("the state changed" if expect is None
+                     else f"the state became {expect!r}")
+        out["error"] = (f"{action} was accepted but {state_prop} is still "
+                        f"{str(after)[:60]!r}, so this action's criterion ({criterion}) is "
+                        f"not met. This receipt does not say why. Known causes, in no "
+                        f"particular order: the element was already in the requested state; "
+                        f"the control is read-only, disabled, or ignores this pattern; or it "
+                        f"was destroyed or replaced between the two reads.")
         if before is not None:
             out["before"] = str(before)[:80]
             out["after"] = str(after)[:80]
