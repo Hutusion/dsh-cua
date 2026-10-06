@@ -134,5 +134,13 @@
   "new": "    if failed:\n        print(\"%d check(s) failed — the docs and the code disagree.\" % failed)\n        return 0  # MUTANT: FAILs printed but exit 0",
   "expect": "escape",
   "why": "short-circuit a verdict branch: failures printed but exit 0, CI stays green; direction 3 only drives verdict() with PASS/SKIP (KNOWN BLIND SPOT)"
+ },
+ {
+  "id": "m18",
+  "file": "check-docs-consistency.py",
+  "old": "        return after[1] if len(after) >= 2 else \"\"     # [pkg, script]",
+  "new": "        return after[0] if after else \"\"  # MUTANT: reads the PACKAGE, not the script",
+  "expect": "caught",
+  "why": "swap the two operands of the O61 distinction: `uvx --from <pkg> <script>` is read as the PACKAGE, which is never what has to exist as an executable. Caught by direction 2 — the good fixture's `uvx --from good-pkg good-tool` then names `good-pkg`, which nothing declares, so the consistent repo false-positives."
  }
 ]

@@ -481,6 +481,150 @@ def check_readonly_count(repo: str) -> None:
                "%d read-only tools, claimed consistently in %d places" % (len(exercised), len(claims)))
 
 
+# --------------------------------------------------------------------------- #
+# install commands: what AGENTS.md claimed was asserted, and nothing was (O62)
+# --------------------------------------------------------------------------- #
+# The name after `uvx` is BOTH the package and the executable it must provide, so a README
+# that recommends `uvx <name>` is recommending an executable — and an executable exists only
+# if `[project.scripts]` declares it.  Measured 2026-10-06: the README's recommended
+# zero-install line was `uvx dsh-cua` while pyproject declared only `dsh-cua-server`, so the
+# first command a reader tried exited 1 ("An executable named 'dsh-cua' is not provided by
+# package 'dsh-cua'").  It survived a whole release because `AGENTS.md` rule 3 listed
+# "install commands" among the things this file asserts, and it did not (O61/O62).
+CONFIG_COMMAND_INTERPRETERS = {
+    # A `"command"` starting with one of these is a launcher, not a console script this
+    # package owes.  Anything else in that position IS a console script resolved from PATH,
+    # so it has to be declared.
+    "python", "python3", "py", "uvx", "uv", "npx", "node", "deno", "bunx", "docker",
+}
+
+_FENCE_RE = re.compile(r'^[ \t]*(```|~~~)[^\n]*\n(.*?)^[ \t]*\1[ \t]*$', re.S | re.M)
+_UVX_RE = re.compile(r'\buvx\b(.{0,200})', re.S)
+# A config file spells its command line as `args: [...]` — JSON `"args": [...]`, YAML
+# `args: [...]`.  That array IS the argv, so the punctuation around it is not.
+_ARGS_RE = re.compile(r'\bargs\b"?\s*:?\s*\[([^\]]*)\]')
+_COMMAND_RE = re.compile(r'"?command"?\s*:\s*"?([A-Za-z0-9][A-Za-z0-9._-]*)"?')
+_EXAMPLE_SUFFIXES = ("json", "yml", "yaml")
+
+
+def declared_console_scripts(repo: str) -> set[str]:
+    """Names declared in pyproject.toml's ``[project.scripts]`` (empty if absent)."""
+    pyproject = os.path.join(repo, "pyproject.toml")
+    if not os.path.exists(pyproject):
+        return set()
+    text = read(pyproject)
+    header = re.search(r'^\[project\.scripts\][ \t]*$', text, re.M)
+    if not header:
+        return set()
+    body = text[header.end():]
+    following = re.search(r'^\[', body, re.M)          # stop at the next table
+    if following:
+        body = body[:following.start()]
+    names = set()
+    for line in body.splitlines():
+        entry = re.match(r'^([A-Za-z0-9][A-Za-z0-9._-]*)\s*=', line.split("#", 1)[0].strip())
+        if entry:
+            names.add(entry.group(1))
+    return names
+
+
+def _argv_tokens(text: str) -> list[str]:
+    """Split a command line into argv-ish tokens, normalising `--from=pkg` to two tokens."""
+    tokens: list[str] = []
+    for raw in text.split():
+        token = raw.strip("\"',[](){}\\")
+        if not token:
+            continue
+        if token.startswith("--from="):
+            tokens.extend(["--from", token.split("=", 1)[1]])
+        else:
+            tokens.append(token)
+    return tokens
+
+
+def _uvx_target(argv: list[str]) -> str:
+    """The executable a ``uvx`` argv runs, or "" when it cannot be told.
+
+    ``uvx <name>`` runs the executable ``name`` out of the package ``name``.
+    ``uvx --from <pkg> <script>`` runs ``script`` out of ``pkg`` — the PACKAGE is not what
+    has to exist as an executable, which is precisely the confusion O61 was made of.
+    """
+    if "--from" in argv:
+        after = argv[argv.index("--from") + 1:]
+        return after[1] if len(after) >= 2 else ""     # [pkg, script]
+    for token in argv:
+        if not token.startswith("-"):
+            return token
+    return ""
+
+
+def advertised_console_scripts(repo: str) -> list[tuple[str, str]]:
+    """(name, where) for every console script the docs tell a reader to run.
+
+    Only COMMAND positions count, and only inside a fenced code block or an ``examples/``
+    file.  The READMEs also discuss ``uvx`` as a word — "uvx runs it out of its own
+    ephemeral environment" — and the token after it there is prose, not a command.
+    Confining the scan to code is what keeps this check from firing on its own
+    documentation, and a check that cries wolf gets switched off.
+
+    All three install shapes are recognised, because they live in different files:
+
+        uvx --from <pkg> <script>     the README fences and `examples/*.json` args arrays
+        uvx <name>                    the short form this package now also provides
+        "command": "<name>"           an MCP config naming a script on PATH
+    """
+    blocks: list[tuple[str, str]] = []
+    for name in ("README.md", "README.zh-CN.md"):
+        path = os.path.join(repo, name)
+        if os.path.exists(path):
+            for i, fenced in enumerate(_FENCE_RE.finditer(read(path)), 1):
+                blocks.append(("%s fence#%d" % (name, i), fenced.group(2)))
+
+    examples = os.path.join(repo, "examples")
+    if os.path.isdir(examples):
+        for fn in sorted(os.listdir(examples)):
+            path = os.path.join(examples, fn)
+            if os.path.isfile(path) and fn.rsplit(".", 1)[-1].lower() in _EXAMPLE_SUFFIXES:
+                blocks.append(("examples/" + fn, read(path)))
+
+    found: list[tuple[str, str]] = []
+    for where, text in blocks:
+        # Newlines flattened for the uvx scan: in the YAML example `command:` and its
+        # `args:` sit on separate lines, so a line-bounded scan would miss the script.
+        flat = " ".join(text.split())
+        for hit in _UVX_RE.finditer(flat):
+            array = _ARGS_RE.search(hit.group(1))
+            argv = _argv_tokens(array.group(1) if array else hit.group(1))
+            target = _uvx_target(argv)
+            if target and not target.startswith("-"):
+                found.append((target, where))
+        for hit in _COMMAND_RE.finditer(text):
+            if hit.group(1) not in CONFIG_COMMAND_INTERPRETERS:
+                found.append((hit.group(1), where + ' "command"'))
+    return found
+
+
+def check_install_commands(repo: str) -> None:
+    """Every console script the docs tell a reader to run must really be declared."""
+    advertised = advertised_console_scripts(repo)
+    if not advertised:
+        record("SKIP", "install commands name a declared console script",
+               "no uvx/command invocation in any code fence or examples/ file")
+        return
+    declared = declared_console_scripts(repo)
+    unknown = sorted({(name, where) for name, where in advertised if name not in declared})
+    if unknown:
+        record("FAIL", "install commands name a declared console script",
+               "%s, but [project.scripts] declares %s"
+               % ("; ".join("%s (from %s)" % (n, w) for n, w in unknown),
+                  ", ".join(sorted(declared)) or "nothing"))
+    else:
+        names = sorted({name for name, _ in advertised})
+        record("PASS", "install commands name a declared console script",
+               "%d invocation(s) across code fences and examples/, all declared: %s"
+               % (len(advertised), ", ".join(names)))
+
+
 CHECKS = [
     check_version_consistency,
     check_server_json_description,
@@ -491,22 +635,35 @@ CHECKS = [
     check_uncalled_tools,
     check_readme_local_paths,
     check_bilingual_agreement,
+    check_install_commands,
 ]
 
 
 # --------------------------------------------------------------------------- #
 # self-test: build a fixture repo that is wrong in known ways
 # --------------------------------------------------------------------------- #
-BAD_PYPROJECT = 'version = "0.9.9"\n'
+BAD_PYPROJECT = (
+    'version = "0.9.9"\n'
+    # Exactly 0.4.0's [project.scripts]: one name, and not the one the README below uses.
+    '\n[project.scripts]\n'
+    'dsh-cua-server = "dsh_cua.server:main"\n'
+)
 BAD_INIT = '__version__ = "0.4.0"\n'
 BAD_SERVER = json.dumps({"version": "0.4.0", "description": "x" * 239}, indent=2)
 BAD_README = (
     "A stdio MCP server exposing 7 tools. Every tool name is prefixed `tool_`.\n"
     "* **Physical input** (hard gate): exactly five things share your cursor.\n"
     "It exposes 5 read-only tools you can call at any time.\n"
-    "Install with `uvx dsh-cua`.\n"
     "See `tests/does-not-exist.py` and `skill/computer-use/SKILL.md`.\n"
     "`tool_ghost_tool` is documented here too.\n"
+    # The 0.4.0 install defect, reproduced in BOTH shapes the docs actually used. The
+    # check must name `dsh-cua` as the missing script — not `args`, and not the package.
+    "```bash\n"
+    "uvx dsh-cua   # recommended zero-install\n"
+    "```\n"
+    "```json\n"
+    '{ "mcpServers": { "win32": { "command": "uvx", "args": ["dsh-cua"] } } }\n'
+    "```\n"
 )
 BAD_SRC = (
     "@mcp.tool(description='a')\ndef tool_alpha() -> None: ...\n"
@@ -534,7 +691,11 @@ def build_fixture(root: str) -> None:
         'r = server.call("tool_alpha", {})\n')
 
 
-GOOD_PYPROJECT = 'version = "1.0.0"\n'
+GOOD_PYPROJECT = (
+    'version = "1.0.0"\n'
+    '\n[project.scripts]\n'
+    'good-tool = "good_pkg.server:main"\n'
+)
 GOOD_INIT = '__version__ = "1.0.0"\n'
 GOOD_SERVER = json.dumps({"version": "1.0.0", "description": "a tool" * 10}, indent=2)
 GOOD_README = (
@@ -543,6 +704,14 @@ GOOD_README = (
     "* **Physical input** (hard gate): exactly one thing shares your cursor.\n"
     "| Tool count | 2 | 59 | 15 | 6 |\n"
     "See `tests/one.py` and `skill/computer-use/SKILL.md`.\n"
+    # Both install branches, against a script that IS declared: the check must stay silent.
+    "```bash\n"
+    "uvx --from good-pkg good-tool   # the explicit form\n"
+    "uvx good-tool                   # the short form\n"
+    "```\n"
+    "```json\n"
+    '{ "mcpServers": { "x": { "command": "good-tool" } } }\n'
+    "```\n"
 )
 GOOD_README_ZH = (
     "一个 stdio MCP 服务器，暴露 2 个工具。工具名一律带 `tool_` 前缀。\n"
@@ -602,6 +771,7 @@ def run_self_test() -> int:
             "every advertised tool name exists",        # tool_ghost_tool
             "advertised tools are exercised by tests",  # tool_beta never called
             "paths named in the README exist",          # tests/does-not-exist.py
+            "install commands name a declared console script",  # uvx dsh-cua, scripts has dsh-cua-server
         }
         got = {name for status, name, _ in results if status == "FAIL"}
         missing = expected_failures - got
