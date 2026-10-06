@@ -13,7 +13,7 @@ server could not start off Windows at all.
 """
 import sys
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 WINDOWS = sys.platform == "win32"
 

@@ -234,11 +234,13 @@ However you install it, **start the server with `python -m dsh_cua`**:
 python -m dsh_cua                # depends on no executable being on PATH
 ```
 
-> **Why the executable is named `dsh-cua-server` in the `uvx` line.** The package ships exactly
-> one console script and it is **not** called `dsh-cua`, so `uvx dsh-cua` fails with
-> *"An executable named `dsh-cua` is not provided by package `dsh-cua`"*. Under `uvx` you name
-> the script explicitly (`--from dsh-cua dsh-cua-server`); uvx runs it out of its own ephemeral
-> environment, so `PATH` does not enter into it.
+> **Why the `uvx` line spells the script out.** The package ships **two** console scripts,
+> `dsh-cua-server` and `dsh-cua`, and both start this same server. The explicit form
+> (`--from dsh-cua dsh-cua-server`) is the one used above because it works on **every**
+> published release: the short name was added in 0.4.1, so against 0.4.0 `uvx dsh-cua` still
+> fails with *"An executable named `dsh-cua` is not provided by package `dsh-cua`"*. Under
+> `uvx` you name the script explicitly; uvx runs it out of its own ephemeral environment, so
+> `PATH` does not enter into it.
 >
 > Under **`pip`** the same script is the poorer choice, for an unrelated reason: pip installs
 > console scripts into the interpreter's `Scripts` directory, and **that directory is not

@@ -54,9 +54,14 @@ jobs:
         run: |
           python -c "import importlib.metadata as m; print('dsh-cua', m.version('dsh-cua'))"
           python -c "from dsh_cua.server import main; assert callable(main); print('main() ok')"
-          # The console script must exist on PATH; --help would start the stdio server,
-          # so only its presence is asserted.
+          # Both console scripts must exist on PATH; --help would start the stdio server,
+          # so only their presence is asserted. Both are asserted because the README's
+          # recommended zero-install line names one of them and every already-published copy
+          # of those instructions names the other (see pyproject.toml's [project.scripts]).
+          # Before this, only `dsh-cua-server` was checked — and the script the docs actually
+          # recommended went unasserted, which is how it stayed broken (O61).
           python -c "import shutil,sys; p=shutil.which('dsh-cua-server'); sys.exit(0 if p else 'dsh-cua-server not on PATH')"
+          python -c "import shutil,sys; p=shutil.which('dsh-cua'); sys.exit(0 if p else 'dsh-cua not on PATH')"
 
       - name: Byte-compile every module
         run: python -m compileall -q src

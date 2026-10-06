@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dsh-cua"
-version = "0.4.0"
+version = "0.4.1"
 description = "Windows computer-use MCP server for dsh (DeepSeek Harness) — client-neutral, works with any stdio MCP client. Accessibility-first element actions, skyshot text trees, guarded raw input, and a cross-session arbiter that yields to the human."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -53,8 +53,19 @@ test = ["pyyaml>=6"]
 [project.urls]
 Homepage = "https://github.com/Hutusion/dsh-cua"
 
+# Two names for one entry point, deliberately. Measured 2026-10-06: this table declared only
+# `dsh-cua-server` while the README's recommended zero-install line said `uvx dsh-cua`. Under
+# uvx the name after `uvx` is BOTH the package and the executable it must provide, so that
+# command exited 1 — "An executable named 'dsh-cua' is not provided by package 'dsh-cua'" —
+# and every MCP config copied from the README failed the same way. The README now spells the
+# script out, but the short form is what every already-published copy of those instructions
+# says (the 0.4.0 PyPI page, the mcp.so submission, third-party listings), and none of those
+# can be edited. Shipping the short name too fixes all of them at once instead of chasing each
+# copy down. `dsh-cua-server` is kept because removing a published console script is a breaking
+# change.
 [project.scripts]
 dsh-cua-server = "dsh_cua.server:main"
+dsh-cua = "dsh_cua.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

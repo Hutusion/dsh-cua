@@ -180,10 +180,11 @@ pip install git+https://github.com/Hutusion/dsh-cua.git
 python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
 ```
 
-> **为什么 `uvx` 那行要写 `dsh-cua-server`**：包里**只有一个** console script，而且它
-> **不叫** `dsh-cua`，所以 `uvx dsh-cua` 会报 *"An executable named `dsh-cua` is not provided
-> by package `dsh-cua`"*。走 `uvx` 时把脚本名写全（`--from dsh-cua dsh-cua-server`）即可 ——
-> uvx 在自己的一次性环境里运行它，**不经过 PATH**。
+> **为什么 `uvx` 那行要把脚本名写全**：包里提供**两个** console script（`dsh-cua-server`
+> 与 `dsh-cua`），两者启动的是同一个 server。上面那行用**写全**的形式，是因为它对**每一个**
+> 已发布版本都成立：短名字是 0.4.1 才加的，所以在 0.4.0 上 `uvx dsh-cua` 仍会报 *"An
+> executable named `dsh-cua` is not provided by package `dsh-cua`"*。走 `uvx` 时把脚本名
+> 写全即可 —— uvx 在自己的一次性环境里运行它，**不经过 PATH**。
 >
 > 而在 **`pip`** 路径上，同一个脚本反而是较差的选择，理由与上面无关：pip 会把 console
 > script 装进解释器的 `Scripts` 目录，而**那个目录不一定在 PATH 上** —— 实测 stock
