@@ -6,4 +6,4 @@
     serverName: win32
     transport: stdio
     command: uvx
-    args: [dsh-cua]
+    args: [--from, dsh-cua, dsh-cua-server]

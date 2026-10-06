@@ -165,7 +165,7 @@ Android 上应用可以创建 `VirtualDisplay`，并且**输入事件带 display
 
 ```bash
 # 方式一：uvx 零安装（推荐）
-uvx dsh-cua                      # 直接运行 stdio MCP server
+uvx --from dsh-cua dsh-cua-server   # 直接运行 stdio MCP server
 
 # 方式二：pip
 pip install dsh-cua
@@ -180,10 +180,16 @@ pip install git+https://github.com/Hutusion/dsh-cua.git
 python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
 ```
 
-> **为什么不写 `dsh-cua-server`**：pip 会把 console script 装进解释器的 `Scripts` 目录，
-> 而**那个目录不一定在 PATH 上** —— 实测 stock python.org 3.12 的 User 与 Machine PATH
-> 都不含它，于是 `pip install dsh-cua` 成功、`dsh-cua-server` 却报 command not found。
-> `python -m` 不需要任何 PATH 条目。console script 仍然提供，PATH 里有它时可用。
+> **为什么 `uvx` 那行要写 `dsh-cua-server`**：包里**只有一个** console script，而且它
+> **不叫** `dsh-cua`，所以 `uvx dsh-cua` 会报 *"An executable named `dsh-cua` is not provided
+> by package `dsh-cua`"*。走 `uvx` 时把脚本名写全（`--from dsh-cua dsh-cua-server`）即可 ——
+> uvx 在自己的一次性环境里运行它，**不经过 PATH**。
+>
+> 而在 **`pip`** 路径上，同一个脚本反而是较差的选择，理由与上面无关：pip 会把 console
+> script 装进解释器的 `Scripts` 目录，而**那个目录不一定在 PATH 上** —— 实测 stock
+> python.org 3.12 的 User 与 Machine PATH 都不含它，于是 `pip install dsh-cua` 成功、
+> `dsh-cua-server` 却报 command not found。`python -m dsh_cua` 不需要任何 PATH 条目。
+> console script 仍然提供，PATH 里有它时可用。
 >
 > 方式一/二现在都可用：包已发布在 PyPI（<https://pypi.org/project/dsh-cua/>）。
 > 若哪一天 `uvx`/`pip` 报 404，用方式三 —— 它总是可用。
@@ -198,10 +204,10 @@ python -m dsh_cua                # 不依赖 PATH 上的任何可执行文件
 { "mcpServers": { "win32": { "command": "python", "args": ["-m", "dsh_cua"] } } }
 ```
 
-**`uvx`（PyPI 发布后）**：
+**`uvx`（零安装）**：
 
 ```json
-{ "mcpServers": { "win32": { "command": "uvx", "args": ["dsh-cua"] } } }
+{ "mcpServers": { "win32": { "command": "uvx", "args": ["--from", "dsh-cua", "dsh-cua-server"] } } }
 ```
 
 更多形状见 [`examples/`](examples/)：Claude Code / 通用客户端 / dsh 的 cordis.patch.yml 片段 /

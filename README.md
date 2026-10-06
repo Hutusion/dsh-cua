@@ -219,7 +219,7 @@ and a tool call then reports "requires Windows" — see "platform semantics" abo
 
 ```bash
 # Option 1: uvx, zero install (recommended)
-uvx dsh-cua                      # runs the stdio MCP server directly
+uvx --from dsh-cua dsh-cua-server   # runs the stdio MCP server directly
 
 # Option 2: pip
 pip install dsh-cua
@@ -234,12 +234,18 @@ However you install it, **start the server with `python -m dsh_cua`**:
 python -m dsh_cua                # depends on no executable being on PATH
 ```
 
-> **Why the README does not say `dsh-cua-server`**: pip installs console scripts into the
-> interpreter's `Scripts` directory, and **that directory is not necessarily on PATH** —
-> measured on a stock python.org 3.12 install, neither the User nor the Machine PATH contained
-> it, so `pip install dsh-cua` succeeded while `dsh-cua-server` reported command not found.
-> `python -m` needs no PATH entry at all. The console script is still shipped and works when
-> PATH does contain it.
+> **Why the executable is named `dsh-cua-server` in the `uvx` line.** The package ships exactly
+> one console script and it is **not** called `dsh-cua`, so `uvx dsh-cua` fails with
+> *"An executable named `dsh-cua` is not provided by package `dsh-cua`"*. Under `uvx` you name
+> the script explicitly (`--from dsh-cua dsh-cua-server`); uvx runs it out of its own ephemeral
+> environment, so `PATH` does not enter into it.
+>
+> Under **`pip`** the same script is the poorer choice, for an unrelated reason: pip installs
+> console scripts into the interpreter's `Scripts` directory, and **that directory is not
+> necessarily on PATH** — measured on a stock python.org 3.12 install, neither the User nor the
+> Machine PATH contained it, so `pip install dsh-cua` succeeded while `dsh-cua-server` reported
+> command not found. `python -m dsh_cua` needs no PATH entry at all. The console script is still
+> shipped and works when PATH does contain it.
 >
 > Options 1 and 2 both work today: the package is published on PyPI
 > (<https://pypi.org/project/dsh-cua/>). If `uvx`/`pip` ever 404s, use option 3 — it always
@@ -259,7 +265,7 @@ Any MCP client; name the server **`win32`** (the skill's tool-name convention is
 **`uvx`**:
 
 ```json
-{ "mcpServers": { "win32": { "command": "uvx", "args": ["dsh-cua"] } } }
+{ "mcpServers": { "win32": { "command": "uvx", "args": ["--from", "dsh-cua", "dsh-cua-server"] } } }
 ```
 
 More shapes are in [`examples/`](https://github.com/Hutusion/dsh-cua/tree/main/examples): Claude Code / generic clients / a dsh
