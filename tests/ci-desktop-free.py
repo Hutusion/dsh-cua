@@ -638,30 +638,46 @@ for timing_case, args, verified, elapsed_ms, foreground_changed in (
 print("\nCAPTURE — per-axis scales agree with the bounds of the encoded image")
 
 
-def capture_receipt(client_only, max_dim):
-    def rectangle(rect):
+def capture_receipt(client_only, max_dim, *, virtualized=False, target_available=True):
+    context = 4
+
+    def switch_context(new):
+        nonlocal context
+        previous, context = context, new
+        return previous
+
+    def rectangle(physical, logical):
         def fill(_hwnd, output):
             target = cast(output, POINTER(bridge.RECT)).contents
-            target.left, target.top, target.right, target.bottom = rect
+            target.left, target.top, target.right, target.bottom = logical if context == 1 else physical
             return True
         return fill
 
     def client_to_screen(_hwnd, output):
         target = cast(output, POINTER(bridge.POINT)).contents
-        target.x, target.y = 108, 231
+        target.x, target.y = (72, 154) if context == 1 else (108, 231)
         return True
 
-    win32 = SimpleNamespace(GetWindowRect=rectangle((100, 200, 1124, 968)),
-                            GetClientRect=rectangle((0, 0, 999, 700)),
-                            ClientToScreen=client_to_screen)
-    pixels = bytes(1024 * 768 * 4)
+    def pixels(_h, width, height, _method):
+        data = bytes(width * height * 4)
+        return data, len(data)
+
+    win32 = SimpleNamespace(GetWindowRect=rectangle((100, 200, 1124, 968), (67, 133, 750, 645)),
+                            GetClientRect=rectangle((0, 0, 999, 700), (0, 0, 666, 467)),
+                            ClientToScreen=client_to_screen,
+                            GetWindowDpiAwarenessContext=lambda _: (1 if virtualized else 4) if target_available else None,
+                            GetThreadDpiAwarenessContext=lambda: context,
+                            AreDpiAwarenessContextsEqual=lambda a, b: a == b,
+                            SetThreadDpiAwarenessContext=switch_context)
     with (
-        patch.multiple(bridge, user32=win32, _capture_pixels=lambda *_: (pixels, len(pixels)),
+        patch.multiple(bridge, user32=win32, _capture_pixels=pixels,
                        _pixels_blank=lambda *_: False, dpi_awareness=lambda *_: {}),
         patch.object(srv, "require_verified_frame_pixels", return_value=None),
     ):
-        return srv.tool_capture_window(hwnd=101, client_only=client_only, max_dim=max_dim,
-                                       image_format="png", include_data_uri=True)
+        result = srv.tool_capture_window(hwnd=101, client_only=client_only, max_dim=max_dim,
+                                         image_format="png", include_data_uri=True)
+        assert context == 4, "capture failed to restore the calling thread's DPI context"
+        return result
 
 
 for client_only, max_dim, bounds, image_size in (
@@ -674,9 +690,47 @@ for client_only, max_dim, bounds, image_size in (
     with Image.open(BytesIO(b64decode(result["data_uri"].split(",", 1)[1]))) as img:
         check(f"capture client_only={client_only} max_dim={max_dim}",
               actual_bounds == bounds and img.size == image_size
+              and result["dpi_verified"] is True
               and result["scale_x"] == round(bounds[2] / image_size[0], 6)
               and result["scale_y"] == round(bounds[3] / image_size[1], 6),
               f"bounds={actual_bounds} image={img.size} sx={result['scale_x']} sy={result['scale_y']}")
+
+scaled = capture_receipt(True, 0, virtualized=True)
+check("DPI virtualized client pixels map to physical bounds",
+      scaled["dpi_verified"] and scaled["bounds"] == {"x": 108, "y": 231, "width": 999, "height": 700}
+      and scaled["client_origin_on_screen"] == (108, 231)
+      and (scaled["image_width"], scaled["image_height"]) == (666, 467)
+      and (scaled["scale_x"], scaled["scale_y"]) == (1.5, round(700 / 467, 6)), repr(scaled["bounds"]))
+resized = capture_receipt(False, 400, virtualized=True)
+check("DPI scaling and full-window resizing compose per axis",
+      resized["dpi_verified"] and resized["bounds"] == {"x": 100, "y": 200, "width": 1024, "height": 768}
+      and resized["image_width"] == 400
+      and resized["scale_x"] == round(1024 / resized["image_width"], 6)
+      and resized["scale_y"] == round(768 / resized["image_height"], 6))
+unverified = capture_receipt(True, 0, target_available=False)
+check("missing target DPI context does not certify screenshot coordinates",
+      unverified["success"] and unverified["dpi_verified"] is False and "dpi_warning" in unverified)
+
+
+print("\nCLICK — coordinate surfaces and sent-but-unconfirmed actions")
+
+for role, outcome, expected_method, reason in (
+    ("image", {}, "raw_event", "effect_unverified"),
+    ("button", {"ok": True, "action_sent": True, "effect_verified": None}, "ax_press", "effect_unverified"),
+    ("button", {"ok": False, "reason": "action_failed", "action_sent": False}, "ax_press", "dispatch_uncertain"),
+):
+    hit = {"ok": True, "role": role, "actions": ["invoke"], "pid": 12, "ref": "fixture"}
+    with (patch.object(uia, "element_at_point", return_value=hit),
+          patch.object(uia, "element_action", return_value=outcome) as ax,
+          patch.object(srv, "bridge_client_to_screen", return_value=(110, 120)),
+          patch.object(srv, "window_pid", return_value=12),
+          patch.object(srv, "click", return_value={"ok": True}) as raw):
+        result = srv.tool_click_at(10, 20, hwnd=101)
+    check(f"{role} {reason} uses only the {expected_method} path",
+          result.get("method") == expected_method and result.get("reason") == reason
+          and result.get("effect_verified") is None
+          and result.get("action_sent") is (None if reason == "dispatch_uncertain" else True)
+          and ax.call_count == (role == "button") and raw.call_count == (role == "image"), repr(result))
 
 
 print("\nTYPE TEXT — no activation and no success on rejected messages")

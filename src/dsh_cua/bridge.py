@@ -82,8 +82,8 @@ user32.ClientToScreen.restype = c_bool
 user32.ClientToScreen.argtypes = [w.HWND, POINTER(POINT)]
 user32.SetCursorPos.restype = c_bool
 user32.SetCursorPos.argtypes = [c_int, c_int]
-user32.GetDC.restype = w.HDC
-user32.GetDC.argtypes = [w.HWND]
+user32.GetWindowDC.restype = w.HDC
+user32.GetWindowDC.argtypes = [w.HWND]
 user32.ReleaseDC.restype = c_bool
 user32.ReleaseDC.argtypes = [w.HWND, w.HDC]
 user32.PostMessageW.restype = c_bool
@@ -147,6 +147,10 @@ user32.SetProcessDpiAwarenessContext.restype = c_bool
 user32.SetProcessDpiAwarenessContext.argtypes = [c_void_p]
 user32.GetThreadDpiAwarenessContext.restype = c_void_p
 user32.GetThreadDpiAwarenessContext.argtypes = []
+user32.GetWindowDpiAwarenessContext.restype = c_void_p
+user32.GetWindowDpiAwarenessContext.argtypes = [w.HWND]
+user32.SetThreadDpiAwarenessContext.restype = c_void_p
+user32.SetThreadDpiAwarenessContext.argtypes = [c_void_p]
 user32.AreDpiAwarenessContextsEqual.restype = c_bool
 user32.AreDpiAwarenessContextsEqual.argtypes = [c_void_p, c_void_p]
 user32.GetAwarenessFromDpiAwarenessContext.restype = c_int
@@ -394,7 +398,8 @@ from io import BytesIO
 def _capture_pixels(h, w2, h2, method):
     """Render window into a BGRA pixel buffer. method: 'printwindow' or 'bitblt'.
     Returns (pixels, buf_sz) or None on failure."""
-    dc_win = user32.GetDC(h)
+    # Both methods render a full-window raster, including the nonclient frame.
+    dc_win = user32.GetWindowDC(h)
     if not dc_win: return None
     dc_mem = gdi32.CreateCompatibleDC(dc_win)
     bmp = gdi32.CreateCompatibleBitmap(dc_win, w2, h2)
@@ -514,37 +519,87 @@ def capture_window_image(hwnd: int, client_only: bool = True, image_format: str 
 
     `scales` is a dict (scale, scale_x, scale_y, width, height); see
     `_pixels_to_image_bytes` for why JPEG is the default and how to map image
-    coordinates back to screen coordinates. scale_x/scale_y differ only when
-    `max_dim` downscales, and then a single ratio is off by up to ~1.4 px.
+    coordinates back to screen coordinates. `scale_x` and `scale_y` account for
+    target DPI scaling and any additional resizing independently.
     """
     return _capture_window_encoded(hwnd, client_only, image_format, quality, max_dim)
 
 
-def _capture_window_encoded(hwnd: int, client_only: bool = True, image_format: str = "png",
-                            quality: int = 80, max_dim: int = 0):
-    """-> (data, method, bounds, scales). `scales` is None only on total failure."""
-    h = w.HWND(hwnd)
+def _capture_layout(h, client_only: bool):
+    """Window raster size, crop, and screen bounds in the current thread's DPI context."""
     r = RECT()
-    if not user32.GetWindowRect(h, byref(r)): return None, None, None, None
+    if not user32.GetWindowRect(h, byref(r)):
+        return None
     w2 = r.right - r.left; h2 = r.bottom - r.top
-    if w2 <= 0 or h2 <= 0: return None, None, None, None
-
-    # Where the client area sits inside the captured bitmap, and where it sits on screen.
-    origin = POINT(0, 0)
-    have_client = bool(user32.ClientToScreen(h, byref(origin)))
-    cr = RECT(); user32.GetClientRect(h, byref(cr))
-    cw = cr.right - cr.left; ch = cr.bottom - cr.top
+    if w2 <= 0 or h2 <= 0:
+        return None
     crop = None
     bounds = (r.left, r.top, w2, h2)
-    if client_only and have_client and cw > 0 and ch > 0:
-        cx = origin.x - r.left; cy = origin.y - r.top
-        left = max(0, min(w2, cx)); top = max(0, min(h2, cy))
-        right = max(left, min(w2, cx + cw)); bottom = max(top, min(h2, cy + ch))
-        if right > left and bottom > top:
-            crop = (left, top, right, bottom)
-            bounds = (r.left + left, r.top + top, right - left, bottom - top)
+    origin = POINT()
+    have_origin = user32.ClientToScreen(h, byref(origin))
+    if client_only and have_origin:
+        cr = RECT()
+        if user32.GetClientRect(h, byref(cr)):
+            cx = origin.x - r.left; cy = origin.y - r.top
+            left = max(0, min(w2, cx)); top = max(0, min(h2, cy))
+            right = max(left, min(w2, cx + cr.right - cr.left))
+            bottom = max(top, min(h2, cy + cr.bottom - cr.top))
+            if right > left and bottom > top:
+                crop = (left, top, right, bottom)
+                bounds = (r.left + left, r.top + top, right - left, bottom - top)
+    return w2, h2, crop, bounds, (origin.x, origin.y) if have_origin else None
 
-    last = (None, None, None, None)
+
+def _capture_window_encoded(hwnd: int, client_only: bool = True, image_format: str = "png",
+                            quality: int = 80, max_dim: int = 0):
+    """Render in the target's pixel space and map the encoded image to screen pixels."""
+    h = w.HWND(hwnd)
+    physical = _capture_layout(h, client_only)
+    if physical is None:
+        return None, None, None, None
+
+    # PrintWindow renders in the target's DPI space. Read raster dimensions and crop
+    # offsets in that same space, then pair them with the bounds measured above.
+    previous = None
+    context_verified = False
+    try:
+        target = user32.GetWindowDpiAwarenessContext(h)
+        if target:
+            if user32.AreDpiAwarenessContextsEqual(target, user32.GetThreadDpiAwarenessContext()):
+                context_verified = True
+            else:
+                previous = user32.SetThreadDpiAwarenessContext(target)
+                context_verified = bool(previous)
+    except (AttributeError, OSError):
+        pass
+    try:
+        raster = _capture_layout(h, client_only) if previous else physical
+        if raster is None:
+            return None, None, None, None
+        w2, h2, crop, source_bounds, _ = raster
+        data, method, scales = _encode_window_raster(h, w2, h2, crop, image_format, quality, max_dim)
+    finally:
+        if previous:
+            user32.SetThreadDpiAwarenessContext(previous)
+    if data is None:
+        return None, None, None, None
+
+    bounds = physical[3]
+    scales["client_origin_on_screen"] = physical[4]
+    scales["mapping_verified"] = bool(
+        context_verified and physical[4] is not None
+        and (not client_only or (crop and physical[2]))
+        and _capture_layout(h, client_only) == physical
+    )
+    if bounds[2:] != source_bounds[2:]:
+        scales["scale_x"] = round(bounds[2] / scales["width"], 6)
+        scales["scale_y"] = round(bounds[3] / scales["height"], 6)
+        scales["scale"] = max(scales["scale_x"], scales["scale_y"])
+    return data, method, bounds, scales
+
+
+def _encode_window_raster(h, w2, h2, crop, image_format, quality, max_dim):
+    last = (None, None, None)
     for method in ("printwindow", "bitblt"):
         got = _capture_pixels(h, w2, h2, method)
         if got is None: continue
@@ -556,7 +611,7 @@ def _capture_window_encoded(hwnd: int, client_only: bool = True, image_format: s
         except ImportError:
             data, scales = None, None
         if data is None: continue
-        last = (data, method, bounds, scales)
+        last = (data, method, scales)
         if not _pixels_blank(pixels, w2, h2):
             return last
     return last

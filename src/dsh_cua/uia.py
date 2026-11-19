@@ -675,6 +675,12 @@ def click_element_at_point(screen_x: int, screen_y: int, *,
                 "error": (f"the element at ({screen_x},{screen_y}) belongs to pid "
                           f"{found.get('pid')}, not the expected pid {expect_pid}; "
                           f"nothing was sent")}
+    # Chromium can expose an entire pixel canvas as an invokable image. That
+    # proxy's Invoke does not address the pixel the caller chose. Explicit
+    # element_action(ref, 'press') remains available for semantic image actions.
+    if found.get("role") in {"image", "document"}:
+        return {"ok": False, "reason": "coordinate_surface", "action_sent": False,
+                "element": found, "method": None}
     if "invoke" not in (found.get("actions") or []):
         return {"ok": False, "reason": "not_invokable", "action_sent": False,
                 "element": found, "method": None,

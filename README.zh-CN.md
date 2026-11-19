@@ -43,7 +43,8 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
   超时后以 `user-active` 拒绝，而不是和你抢光标。`tool_click_at` 会**先试元素路径**（`ax_press`），
   它不注入物理输入，因此只拿互斥量——回执里的 `method` 字段说明实际走了哪条。裸事件路径按下鼠标前，
   会确认光标移动成功、已到达指定坐标，且该坐标仍属于目标窗口。任一检查失败时，返回
-  `success: false` 和 `action_sent: false`，不发送鼠标按键事件。
+  `success: false` 和 `action_sent: false`，不发送鼠标按键事件。坐标命中图像或文档表面时，直接走裸事件路径。
+  已发出的 `Invoke` 若无法确认效果，回执返回 `effect_verified: null`，重试前应先观察界面。
 
 这里的「只读」指不产生变更动作、不合成输入，所以别人正在用这台机器时也可以调。其中两个有值得知道的
 副作用：`tool_capture_window` 会把截图写到磁盘（`save_path`，省略则写临时文件），`tool_skyshot`
@@ -96,7 +97,8 @@ Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在*
 模型**走不了树表达不了的界面（canvas、游戏、远程桌面）。**模型有视觉时，像素通路是完整支持的**：
 `capture_window` 在返回图片的同时给出经过校验的「图像坐标 → 屏幕坐标」映射（`bounds`、
 `scale_x`、`scale_y`、`dpi_verified`），接地由模型完成。换算时先分别乘以对应轴的比例，再加上 `bounds` 中的
-屏幕原点。只裁剪而未缩放时，两轴比例均为 1。另外没有录制回放；没有隔离沙箱。这些各有更合适的方案。
+屏幕原点。受 DPI 虚拟化的目标即使没有缩放输出图像，比例也可能大于 1。传给 `click_at` 前还要减去
+`client_origin_on_screen`，得到客户区坐标。只有 `dpi_verified=true` 时才可使用该映射。
 
 ## 常见问题
 

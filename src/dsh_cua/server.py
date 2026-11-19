@@ -130,7 +130,7 @@ def tool_find_window(title: str = "") -> dict[str, Any]:
     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 5)
     return {"success": True, "hwnd": hwnd, "title": buf.value, **rect}
 
-@mcp.tool(description="Capture a window screenshot and SAVE IT TO A FILE. Provide hwnd or title substring. Crops to the window's CLIENT area by default, so image pixel (0,0) is the same point click_at calls (0,0) — no frame offset to guess. Returns bounds = the screen rect (x,y,width,height) the image maps to, and per-axis `scale_x` and `scale_y`. Multiply image coordinates by the corresponding scale and then add the bounds origin to get screen coordinates. Cropping alone does not change either scale. Also reports dpi_verified; when false, image pixels and input coordinates cannot be safely paired. Defaults to JPEG q80 — a 1080p shot is ~6-10x smaller than PNG, which is what keeps a long session's request body under the provider's 32 MiB cap. The bytes are NOT inlined as base64 by default (that costs ~12,500 tokens per shot as text); read the saved_path with read_image instead, which attaches the same picture for ~50 tokens. Pass include_data_uri=true only when a caller genuinely cannot read a file. Read-only — no input injection, no focus change.")
+@mcp.tool(description="Capture a window screenshot and SAVE IT TO A FILE. Provide hwnd or title substring. Crops to the window's CLIENT area by default, so image pixel (0,0) is the same point click_at calls (0,0) — no frame offset to guess. Returns bounds = the screen rect (x,y,width,height) the image maps to, and per-axis `scale_x` and `scale_y`. Multiply image coordinates by the corresponding scale and then add the bounds origin to get screen coordinates. A DPI-virtualized target can have different image-pixel and screen-pixel dimensions even without resizing. Also reports dpi_verified; when false, image pixels and input coordinates cannot be safely paired. Defaults to JPEG q80 — a 1080p shot is ~6-10x smaller than PNG, which is what keeps a long session's request body under the provider's 32 MiB cap. The bytes are NOT inlined as base64 by default (that costs ~12,500 tokens per shot as text); read the saved_path with read_image instead, which attaches the same picture for ~50 tokens. Pass include_data_uri=true only when a caller genuinely cannot read a file. Read-only — no input injection, no focus change.")
 def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", client_only: bool = True,
                         image_format: str = "jpeg", quality: int = 80, max_dim: int = 0,
                         include_data_uri: bool = False) -> dict[str, Any]:
@@ -179,8 +179,8 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
            "bounds": {"x": bounds[0], "y": bounds[1], "width": bounds[2], "height": bounds[3]},
            "client_only": client_only,
            "window_rect": {k: rect[k] for k in ("x", "y", "width", "height")},
-           "client_origin_on_screen": rect["client_origin_on_screen"],
-           "dpi_verified": dpi_gate is None,
+           "client_origin_on_screen": scales.get("client_origin_on_screen"),
+           "dpi_verified": dpi_gate is None and scales.get("mapping_verified", False),
            "image_format": image_format, "quality": quality if image_format == "jpeg" else None,
            # Encoded size + the per-axis ratios from IMAGE pixels to screen pixels.
            # One ratio is not enough once the encoded size is rounded to whole pixels:
@@ -189,20 +189,21 @@ def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", cli
            "scale": scales["scale"], "scale_x": scales["scale_x"], "scale_y": scales["scale_y"],
            "size_bytes": len(data), "capture_time_ms": round((t1-t0)*1000, 1),
            "capture_method": method, "saved_path": saved}
-    if scales["scale"] != 1.0:
-        out["scale_note"] = ("image is downscaled: multiply image pixel coordinates by "
-                             "`scale_x` / `scale_y` (not the single `scale`) before passing "
-                             "them to click_at; a downscaled shot is for looking, not for "
-                             "pixel-exact clicking")
+    if out["dpi_verified"] and (scales["scale_x"] != 1.0 or scales["scale_y"] != 1.0):
+        out["scale_note"] = ("Multiply image coordinates by scale_x / scale_y and add the "
+                             "bounds origin for screen coordinates. Subtract client_origin_on_screen "
+                             "for click_at client coordinates.")
     if include_data_uri:
         mime = "image/jpeg" if image_format == "jpeg" else "image/png"
         out["data_uri"] = f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}"
     if dpi_gate is not None:
         out["dpi_warning"] = dpi_gate["error"]
         out["dpi"] = dpi_gate["dpi"]
+    elif not out["dpi_verified"]:
+        out["dpi_warning"] = "Could not verify the target's screenshot geometry. Do not click from this image."
     return out
 
-@mcp.tool(description="Send keyboard shortcut to a window. Example: keys=['ctrl','s']. For Alt+key menu navigation, include 'alt' as first key (or set use_alt_key). MUTATING: serialized across agent sessions via the admission gate, and global hotkeys additionally YIELD TO THE USER — recent mouse/keyboard activity makes them wait, then refuse with reason user-active instead of interrupting; switch to element actions or retry later. Also refuses when the window is not the foreground window, because injected keys would go to the wrong window.")
+@mcp.tool(description="Send keyboard shortcut to a window. Example: keys=['ctrl','s']. Physical keys follow the active input method. A successful dispatch does not verify that text was committed. Use set_value for literal text when available. For Alt+key menu navigation, include 'alt' as first key (or set use_alt_key). MUTATING: serialized across agent sessions via the admission gate, and global hotkeys additionally YIELD TO THE USER — recent mouse/keyboard activity makes them wait, then refuse with reason user-active instead of interrupting; switch to element actions or retry later. Also refuses when the window is not the foreground window, because injected keys would go to the wrong window.")
 def tool_send_keys(keys: list[str] = None, hwnd: int = 0, title: str = "", use_alt_key: bool = False) -> dict[str, Any]:
     if keys is None: keys = []
     if hwnd == 0 and title:
@@ -231,7 +232,7 @@ def tool_send_keys(keys: list[str] = None, hwnd: int = 0, title: str = "", use_a
             "arbiter": outcome.get("arbiter"),
             "time_ms": round((time.perf_counter()-t0)*1000, 1)}
 
-@mcp.tool(description="Click at client-area coordinates within a window. Coordinates relative to window content area (0,0 = top-left). Tries the ELEMENT path first (resolve the point via UI Automation and invoke that element) because it needs no focus and does not care about z-order; falls back to a raw cursor click, which does. The result's `method` says which was used: 'ax_press' or 'raw_event'. MUTATING: serialized across agent sessions; the raw_event path ALSO YIELDS TO THE USER (waits for input-quiet, then refuses with user-active rather than fighting them for the cursor); the ax_press path injects no physical input. The raw path verifies the addressed window actually owns that screen point and returns success=false instead of clicking another window. Pass dry_run=true to check where the click would land without moving the cursor, clicking, or taking any gate.")
+@mcp.tool(description="Click at client-area coordinates within a window. Coordinates relative to window content area (0,0 = top-left). Tries the ELEMENT path first (resolve the point via UI Automation and invoke that element) because it needs no focus and does not care about z-order; falls back to a gated raw cursor click before dispatch when the hit is an image/document surface or cannot be invoked. A sent Invoke is never followed automatically by a raw click. Check effect_verified and observe the window when the effect is unconfirmed. The result's `method` says which was used: 'ax_press' or 'raw_event'. MUTATING: serialized across agent sessions; the raw_event path ALSO YIELDS TO THE USER (waits for input-quiet, then refuses with user-active rather than fighting them for the cursor); the ax_press path injects no physical input. The raw path verifies the addressed window actually owns that screen point and returns success=false instead of clicking another window. Pass dry_run=true to check where the click would land without moving the cursor, clicking, or taking any gate.")
 def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
                   dry_run: bool = False, prefer: str = "element") -> dict[str, Any]:
     if hwnd == 0 and title:
@@ -250,18 +251,35 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
             pid = window_pid(hwnd)
             got = uia.click_element_at_point(screen[0], screen[1], expect_pid=pid,
                                              dry_run=dry_run)
+            uncertain = got.get("reason") == "action_failed" and not got.get("action_sent")
+            action_sent = None if uncertain else bool(got.get("action_sent"))
             attempts.append({"method": "ax_press", "ok": bool(got.get("ok")),
                              "reason": got.get("reason"), "error": got.get("error"),
+                             "action_sent": action_sent,
+                             "effect_verified": got.get("effect_verified"),
                              "screen": {"x": screen[0], "y": screen[1]},
                              "element": got.get("element")})
-            if got.get("ok"):
-                return {"success": True, "hwnd": hwnd, "x": x, "y": y,
+            # A provider can fail after partially processing Invoke. A second click
+            # would then duplicate the action. Only fall back on a pre-dispatch refusal.
+            if got.get("ok") or got.get("action_sent") or got.get("reason") == "action_failed":
+                verified = got.get("effect_verified")
+                result = {"success": bool(got.get("ok")), "hwnd": hwnd, "x": x, "y": y,
                         "method": "ax_press", "focus_stolen": False, "dry_run": dry_run,
-                        "action_sent": True, "would_click": False,
+                        "action_sent": action_sent, "would_click": False,
+                        "effect_verified": verified,
                         "element": got.get("element"),
                         "arbiter": got.get("arbiter"),
                         "attempts": attempts,
                         "time_ms": round((time.perf_counter()-t0)*1000, 1)}
+                if uncertain:
+                    result.update(reason="dispatch_uncertain", effect_verified=None, error=got.get("error"))
+                    result["effect_note"] = "Dispatch could not be confirmed. Observe the target before retrying."
+                elif verified is None and got.get("ok"):
+                    result["reason"] = "effect_unverified"
+                    result["effect_note"] = "Invoke was accepted. Observe the target before deciding whether to retry."
+                elif got.get("reason"):
+                    result.update(reason=got["reason"], error=got.get("error"))
+                return result
             if dry_run and got.get("reason") == "dry_run":
                 # A preview is a RESULT, not a failure: reporting the element the element
                 # path WOULD have pressed is the entire value of dry_run. Falling through
@@ -292,7 +310,8 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
                 "arbiter": outcome.get("arbiter") or arbiter.no_gate("dry-run"),
                 "attempts": attempts, "time_ms": elapsed}
     return {"success": True, "hwnd": hwnd, "x": x, "y": y, "dry_run": False,
-            "action_sent": True, "would_click": False,
+            "action_sent": True, "would_click": False, "effect_verified": None,
+            "reason": "effect_unverified",
             "method": "raw_event", "focus_stolen": True,
             "arbiter": outcome.get("arbiter"),
             "attempts": attempts, "time_ms": elapsed}

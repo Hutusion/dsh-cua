@@ -59,7 +59,10 @@ A stdio MCP server exposing 19 tools. Every tool name is prefixed `tool_`, exact
   `tool_send_keys`' global hotkeys. The gate waits for the machine to go input-quiet, then refuses
   with `user-active` rather than fight you for the cursor. `tool_click_at` tries its **element path
   first** (`ax_press`), which injects no physical input and therefore takes the mutex only; the
-  receipt's `method` field says which path actually ran. Before a raw click presses the mouse
+  receipt's `method` field says which path actually ran. Coordinate hits on image or document
+  surfaces go to the raw path because an Invoke on the surface does not address the chosen pixel.
+  A sent Invoke with an unconfirmed effect returns `effect_verified: null`. Re-observe before
+  retrying. Before a raw click presses the mouse
   button, it verifies that the cursor move succeeded, the cursor reached the requested point,
   and that point still belongs to the target window. If any check fails, it returns
   `success: false` and `action_sent: false` without sending a mouse-button event.
@@ -129,8 +132,10 @@ own — the server does not analyse pixels, so **a text-only model** cannot driv
 a tree cannot express (canvas, games, remote desktop). With a **vision-capable model** the pixel
 path is supported end to end: `capture_window` returns the image together with a verified
 image→screen mapping (`bounds`, `scale_x`, `scale_y`, `dpi_verified`), and the model supplies the
-grounding. Add `bounds.x` and `bounds.y` after scaling the image coordinates on their respective
-axes. Both axis factors are 1 for a cropped image that was not resized.
+grounding. When `dpi_verified` is true, multiply image coordinates by `scale_x` and `scale_y`,
+then add `bounds.x` and `bounds.y` to get screen coordinates. A DPI-virtualized target can need
+non-unit scale factors even without resizing. For `click_at`, subtract `client_origin_on_screen`
+from the results to get client-relative coordinates.
 Also not provided: record-and-replay, and an isolation sandbox. There are better-suited tools
 for those.
 

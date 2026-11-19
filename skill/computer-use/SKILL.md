@@ -120,9 +120,15 @@ accessibility cannot express the target.
 **Never translate image pixels into an element index.** A coordinate from a screenshot is only ever
 usable as a coordinate.
 
+For image or document surfaces, coordinate clicks use the gated raw path. For a sent Invoke,
+`effect_verified: null` means the action's effect is unknown. Observe before trying a second click.
+
 ## Receipts and retry safety
 
 `action_sent: true` means the action **may already have happened**. Never replay it blindly.
+
+Physical keys follow the active keyboard layout and IME. To enter literal text, prefer `set_value`
+and verify the result.
 
 - `effect_verified: true` — readback confirmed the requested state or transition.
 - `effect_verified: false` — the result failed the requested check, and the tool reports `ok: false`.
