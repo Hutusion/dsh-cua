@@ -33,10 +33,14 @@ import re
 import subprocess
 import sys
 import time
+from base64 import b64decode
 from ctypes import POINTER, cast
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
+
+from PIL import Image
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(REPO, "src")
@@ -479,6 +483,135 @@ receipt, buttons = raw_click_receipt()
 check("a verified raw click sends one down/up pair",
       receipt.get("success") is True and receipt.get("method") == "raw_event"
       and buttons == [bridge.MOUSEEVENTF_LEFTDOWN, bridge.MOUSEEVENTF_LEFTUP], str(buttons))
+
+print("\nUIA EFFECT — verify the requested value or state")
+
+
+def element_effect(action, before, after, **arguments):
+    capability = uia.ACTION_MAP[action][0]
+    attr, prop, _ = uia.EFFECT_STATE[action]
+    pattern = Mock(CurrentIsReadOnly=False)
+    setattr(type(pattern), prop, PropertyMock(side_effect=[before, after]))
+    wrapper = SimpleNamespace(**{attr: pattern})
+    with (
+        patch.multiple(uia, _AVAILABLE=True, ACTIONS_ENABLED=True, _foreground_root=lambda: 101,
+                       resolve=lambda _ref: {"ok": True, "element": object()},
+                       describe=lambda _el: {"name": "fixture", "role": "edit", "rect": None,
+                                             "actions": [capability]},
+                       _wrapper_for=lambda _el: wrapper),
+        patch.object(uia.time, "sleep"),
+    ):
+        return asyncio.run(srv.tool_element_action("ref", action, **arguments))
+
+
+for label, name, before, after, arguments, sent, success, verified in (
+    ("wrong value", "set_value", "old", "wrong", {"text": "wanted"}, True, False, False),
+    ("unreadable after", "set_value", "old", RuntimeError(), {"text": "wanted"}, True, True, None),
+    ("unreadable before", "set_value", RuntimeError(), "wanted", {"text": "wanted"}, True, True, True),
+    ("already set", "set_value", "wanted", "wanted", {"text": "wanted"}, True, True, True),
+    ("explicit empty", "set_value", "old", "", {"text": ""}, True, True, True),
+    ("missing text", "set_value", "old", "old", {}, False, False, None),
+    ("partial expansion", "expand", 0, 2, {}, True, False, False),
+    ("already collapsed", "collapse", 0, 0, {}, True, True, True),
+    ("unreadable toggle", "toggle", 0, RuntimeError(), {}, True, True, None),
+    ("valid toggle", "toggle", 0, 1, {}, True, True, True),
+    ("selected after", "select", RuntimeError(), True, {}, True, True, True),
+):
+    result = element_effect(name, before, after, **arguments)
+    check(f"{label} reports success={success} and verified={verified}",
+          result.get("action_sent") is sent and result.get("success") is success
+          and result.get("effect_verified") is verified, repr(result))
+
+with patch.object(uia, "element_action_at", return_value={"ok": True}) as set_by_index:
+    asyncio.run(srv.tool_element_action_at(101, 1, "set_value", text="", shot_id="fixture"))
+    check("the Skyshot tool forwards explicit empty text", set_by_index.call_args.args[3] == "")
+
+
+print("\nCAPTURE — per-axis scales agree with the bounds of the encoded image")
+
+
+def capture_receipt(client_only, max_dim):
+    def rectangle(rect):
+        def fill(_hwnd, output):
+            target = cast(output, POINTER(bridge.RECT)).contents
+            target.left, target.top, target.right, target.bottom = rect
+            return True
+        return fill
+
+    def client_to_screen(_hwnd, output):
+        target = cast(output, POINTER(bridge.POINT)).contents
+        target.x, target.y = 108, 231
+        return True
+
+    win32 = SimpleNamespace(GetWindowRect=rectangle((100, 200, 1124, 968)),
+                            GetClientRect=rectangle((0, 0, 999, 700)),
+                            ClientToScreen=client_to_screen)
+    pixels = bytes(1024 * 768 * 4)
+    with (
+        patch.multiple(bridge, user32=win32, _capture_pixels=lambda *_: (pixels, len(pixels)),
+                       _pixels_blank=lambda *_: False, dpi_awareness=lambda *_: {}),
+        patch.object(srv, "require_verified_frame_pixels", return_value=None),
+    ):
+        return srv.tool_capture_window(hwnd=101, client_only=client_only, max_dim=max_dim,
+                                       image_format="png", include_data_uri=True)
+
+
+for client_only, max_dim, bounds, image_size in (
+    (True, 0, (108, 231, 999, 700), (999, 700)),
+    (True, 500, (108, 231, 999, 700), (500, 350)),
+    (False, 512, (100, 200, 1024, 768), (512, 384)),
+):
+    result = capture_receipt(client_only, max_dim)
+    actual_bounds = tuple(result["bounds"][k] for k in ("x", "y", "width", "height"))
+    with Image.open(BytesIO(b64decode(result["data_uri"].split(",", 1)[1]))) as img:
+        check(f"capture client_only={client_only} max_dim={max_dim}",
+              actual_bounds == bounds and img.size == image_size
+              and result["scale_x"] == round(bounds[2] / image_size[0], 6)
+              and result["scale_y"] == round(bounds[3] / image_size[1], 6),
+              f"bounds={actual_bounds} image={img.size} sx={result['scale_x']} sy={result['scale_y']}")
+
+
+print("\nTYPE TEXT — no activation and no success on rejected messages")
+
+
+def type_receipt(post_results, readback, target=202):
+    post = Mock(side_effect=post_results)
+    activate = Mock()
+    release = Mock()
+    with (
+        patch.multiple(bridge, user32=SimpleNamespace(PostMessageW=post),
+                       foreground_root=lambda: 999, _ensure_visible=activate,
+                       find_text_target=lambda _hwnd: (target, "fixture" if target else ""),
+                       _read_control_text=Mock(side_effect=readback)),
+        patch.object(arbiter, "admit_mutating", return_value={"ok": True, "release": release}),
+    ):
+        result = srv.tool_type_text(hwnd=101, text="abc", delay_ms=0)
+    activate.assert_not_called()
+    release.assert_called_once_with()
+    return result, [call.args[2] for call in post.call_args_list]
+
+
+for label, posts, readback, target, count, sent, success, verified, reason in (
+    ("first rejected", [False], [], 0, 0, False, False, False, "post-failed"),
+    ("prefix queued", [True, False], ["abX"], 202, 1, True, False, None, "partial-post"),
+    ("exact insertion", [True] * 3, ["abX", "abcabX"], 202, 3, True, True, True, "posted"),
+    ("wrong insertion", [True] * 3, ["abX", "abdabX"], 202, 3, True, True, None, "posted"),
+    ("unchanged", [True] * 3, ["abX", "abX"], 202, 3, True, False, False, "no-effect"),
+    ("no readback", [True] * 3, [], 0, 3, True, True, None, "posted"),
+):
+    result, messages = type_receipt(posts, readback, target)
+    check(f"{label} reports {reason} without activating the target",
+          result.get("success") is success and result.get("action_sent") is sent
+          and result.get("effect_verified") is verified and result.get("reason") == reason
+          and result.get("typed") == count and result.get("foreground_changed") is False
+          and messages == list(map(ord, "abc"[:len(posts)])),
+          f"receipt={result} messages={messages}")
+
+with patch.object(srv, "foreground_window", return_value=None):
+    result = srv.tool_type_text("abc")
+    check("no foreground window refuses the implicit text target",
+          result.get("reason") == "invalid-window" and result.get("action_sent") is False,
+          repr(result))
 
 print()
 if failures:

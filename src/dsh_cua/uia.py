@@ -463,16 +463,14 @@ def _wrapper_for(el):
     return UIAWrapper(UIAElementInfo(el))
 
 
-# Pattern state that can be read before and after an action, so the effect can be
-# CHECKED rather than assumed. `press` has no such state, which is why it is the one
-# action whose effect cannot be verified — and why it reports that honestly.
-#   action -> (iface attribute, property name, expected-after value or None for "changed")
+# SetValue uses the requested text. Toggle requires a transition. The other patterns
+# have a fixed target state (UIA ExpandCollapseState: Expanded=1, Collapsed=0).
 EFFECT_STATE = {
     "set_value": ("iface_value", "CurrentValue", None),
     "select": ("iface_selection_item", "CurrentIsSelected", True),
     "toggle": ("iface_toggle", "CurrentToggleState", None),
-    "expand": ("iface_expand_collapse", "CurrentExpandCollapseState", None),
-    "collapse": ("iface_expand_collapse", "CurrentExpandCollapseState", None),
+    "expand": ("iface_expand_collapse", "CurrentExpandCollapseState", 1),
+    "collapse": ("iface_expand_collapse", "CurrentExpandCollapseState", 0),
 }
 
 
@@ -493,9 +491,9 @@ def element_action(ref: str, action: str, text: Optional[str] = None,
     showed calls that returned success and changed nothing (`SetValue` on a read-only
     value, `Invoke` on a tab's close button). So where the pattern exposes state it is
     read before and after, and the result carries `effect_verified`:
-      True  — the state changed as expected
-      False — the call was accepted but nothing changed (reported as ok=False)
-      None  — no state to compare (press); the call was accepted, effect unconfirmed
+      True  — the requested state or transition was observed
+      False — the action did not produce the requested result (reported as ok=False)
+      None  — the call was accepted and its effect could not be confirmed
     """
     gate = None
     if not dry_run:
@@ -555,6 +553,8 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
 
     # Read the pattern's state before acting, when it has any.
     state_attr, state_prop, expect = EFFECT_STATE.get(action, (None, None, None))
+    if action == "set_value":
+        expect = text
     before = None
     if state_attr is not None:
         try:
@@ -590,11 +590,15 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
     # Check the effect where the pattern exposes state.
     effect_verified = None
     after = None
-    if state_attr is not None and before is not None:
+    if state_attr is not None:
         try:
             iface = getattr(_wrapper_for(el), state_attr)
             after = _safe(lambda: getattr(iface, state_prop), None)
-            effect_verified = (after == expect) if expect is not None else (after != before)
+            if after is not None:
+                if expect is not None:
+                    effect_verified = after == expect
+                elif before is not None:
+                    effect_verified = after != before
         except Exception:
             effect_verified = None
 
@@ -611,30 +615,15 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
            "element": would["element"]}
     if effect_verified is False:
         out["ok"] = False
-        out["reason"] = "state_unchanged"
-        # Neutral on purpose: the two reads prove the state does not satisfy this action's
-        # criterion, and say nothing about WHY. The previous wording ended with "the pattern
-        # is inert for this element" — a guess presented as a diagnosis, the same mistake the
-        # `no-effect` text in bridge.py was rewritten to avoid. The criterion is per-action
-        # (EFFECT_STATE), which is also why it is named here instead of being described as
-        # "did not change": where `expect` is None a CHANGE is required, so an element that
-        # was ALREADY in the requested state lands here (expand / collapse / set_value);
-        # `select` checks the target state instead, so an already-selected element reports
-        # success. That asymmetry is deliberate but easy to misread.
-        criterion = ("the state changed" if expect is None
-                     else f"the state became {expect!r}")
-        out["error"] = (f"{action} was accepted but {state_prop} is still "
-                        f"{str(after)[:60]!r}, so this action's criterion ({criterion}) is "
-                        f"not met. This receipt does not say why. Known causes, in no "
-                        f"particular order: the element was already in the requested state; "
-                        f"the control is read-only, disabled, or ignores this pattern; or it "
-                        f"was destroyed or replaced between the two reads.")
+        out["reason"] = "state_unchanged" if before == after else "state_mismatch"
+        out["error"] = (f"{action} was accepted, but {state_prop} did not match the "
+                        "requested result after the call.")
         if before is not None:
             out["before"] = str(before)[:80]
-            out["after"] = str(after)[:80]
+        out["after"] = str(after)[:80]
     elif effect_verified is None and action != "focus":
-        out["effect_note"] = ("the pattern call was accepted; this action exposes no state "
-                              "to compare, so the effect is unconfirmed")
+        out["effect_note"] = ("The pattern call was accepted. The state needed to verify "
+                              "the effect was unavailable")
     return out
 
 

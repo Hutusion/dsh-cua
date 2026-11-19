@@ -108,8 +108,9 @@ is never raised, z-order never matters, and the user's focus is not stolen.
   descendant — and reads that control back, so the receipt carries `effect_verified`,
   `resolved_by` and `target_hwnd` instead of echoing your argument back at you. A top-level
   `WM_CHAR` never reaches a child edit control, so passing a window handle is fine: the tool
-  finds the control. `effect_verified: null` means no control was readable (a browser or
-  Electron window) and the effect is **unconfirmed**, not proven.
+  finds the control without activating or restoring its window. On `post-failed` or `partial-post`,
+  `typed` counts the queued characters. Inspect the target before retrying a partial post.
+  `effect_verified: null` means readback could not confirm the requested insertion.
 
 **Coordinate clicks are the fallback** — `mcp__win32__tool_click_at`. It tries the element path first
 and reports which it used in `method` (`ax_press` = focus-free, `raw_event` = cursor injection). The
@@ -123,11 +124,10 @@ usable as a coordinate.
 
 `action_sent: true` means the action **may already have happened**. Never replay it blindly.
 
-- `effect_verified: true` — the pattern's state changed as expected.
-- `effect_verified: false` — the call was accepted but nothing changed; reported as `ok: false`.
+- `effect_verified: true` — readback confirmed the requested state or transition.
+- `effect_verified: false` — the result failed the requested check, and the tool reports `ok: false`.
   Do not retry the same call; re-observe and pick a fresh target.
-- `effect_verified: null` — this action exposes no comparable state (`press` is the common case), so
-  the effect is **unconfirmed**. Confirm it another way if it matters — read the window again, or use
+- `effect_verified: null` — the effect is **unconfirmed**. Confirm it another way if it matters — read the window again, or use
   an external oracle such as the file or the server the action was supposed to affect.
 - `foreground_changed: true` — the action activated the window. On some apps this is unavoidable
   (setting a value on Notepad's document does it). Report it rather than hide it.

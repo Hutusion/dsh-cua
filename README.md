@@ -116,16 +116,17 @@ concentrated on one thing: **sharing a machine with a human.**
   proof, and it covers input-age detection only: cua-driver does have human-facing guards of a
   different kind (a consent requirement, and foreground-steal detection with restore).
 
-`effect_verified` is likewise something the alternatives lack: it splits "the call was accepted"
-from "the effect happened" and gives three states (`true` changed as expected / `false` accepted
-but unchanged, downgraded to a failure / `null` no comparable state, i.e. unconfirmed). The
-usual alternative is to re-observe once after the action and leave the judgement to the model.
+`effect_verified` reports the result of readback. `true` means the requested state or transition
+was observed, `false` means the result did not satisfy the request, and `null` means the effect
+is unconfirmed. For `set_value`, readback checks the requested value, including an empty string.
 
 **What dsh-cua does not do** (stated up front to avoid misunderstanding): no grounding of its
 own — the server does not analyse pixels, so **a text-only model** cannot drive interfaces that
 a tree cannot express (canvas, games, remote desktop). With a **vision-capable model** the pixel
 path is supported end to end: `capture_window` returns the image together with a verified
-image→screen mapping (`bounds`, `scale`, `dpi_verified`), and the model supplies the grounding.
+image→screen mapping (`bounds`, `scale_x`, `scale_y`, `dpi_verified`), and the model supplies the
+grounding. Add `bounds.x` and `bounds.y` after scaling the image coordinates on their respective
+axes. Both axis factors are 1 for a cropped image that was not resized.
 Also not provided: record-and-replay, and an isolation sandbox. There are better-suited tools
 for those.
 
@@ -200,16 +201,16 @@ near the problem, because they inject no input at all:
 - `element_action` / `element_action_at` — a UIA pattern is delivered to the element: no physical
   input, no cursor movement, no focus change. These are the paths that "can run while the user
   types".
-- `type_text` — a window-targeted `PostMessage`, not global keystrokes. It resolves the text
-  control inside the window first (a top-level window does not forward `WM_CHAR` to its child
-  edit) and reads that control back, so the receipt carries `effect_verified` rather than only
-  reporting that something was posted.
+- `type_text` resolves the text control and posts messages without activating or restoring the
+  target window. It stops at the first rejected message and returns the count accepted in `typed`.
+  If only a prefix was posted, inspect the control before retrying. `effect_verified` reflects
+  whether readback confirmed the requested insertion.
   **One measured limit, on Chromium:** a `WM_CHAR` posted to a Chromium window that is **not the
   active window** is accepted by `PostMessage` and changes nothing, while the identical post to
   the same window *when it is active* inserts the character
   (`tests/verify-visible-vs-foreground.py`). So on a background browser window, expect the text
-  **not** to appear — and read the receipt: you get `effect_verified: null` (**unconfirmed**)
-  rather than a false `ok`. **Not measured:** which control the resolver actually picks inside a
+  **not** to appear. If readback is unavailable, the receipt reports `effect_verified: null`
+  (**unconfirmed**) even when all messages were accepted. **Not measured:** which control the resolver picks inside a
   *live page* (Chromium's render widget is not an `EDIT`-class control, so the landing point may
   fall back to the window itself). The receipt's `resolved_by` / `target_hwnd` tell you which it
   was — that is the cheap way to settle it against your own target.

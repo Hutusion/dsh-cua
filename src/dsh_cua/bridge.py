@@ -457,8 +457,8 @@ def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
     Measured 2026-09-19: JPEG q80 is ~6-10x smaller than PNG for the same
     pixels, which is what keeps long CUA sessions under that cap.
 
-    `scales` maps IMAGE pixels back to the pixels of the un-downscaled frame, i.e.
-    the screen coordinates `click()` wants:
+    `scales` maps image pixels back to the size of the captured region before resizing.
+    Add the capture bounds origin to convert the scaled coordinates to screen pixels.
       {"scale": s, "scale_x": sx, "scale_y": sy, "width": w, "height": h}
     All three are exactly 1.0 when `max_dim` does not shrink the image, so the
     invariant this module is built on — image pixel (0,0) == the click (0,0) — holds
@@ -471,6 +471,7 @@ def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
     img = Image.frombuffer("RGBA", (w2, h2), bytes(pixels), "raw", "BGRA", 0, 1).convert("RGB")
     if crop is not None:
         img = img.crop(crop)
+    source_width, source_height = img.size
     scale = 1.0
     if max_dim and max(img.size) > max_dim:
         scale = max(img.size) / float(max_dim)
@@ -484,8 +485,8 @@ def _pixels_to_image_bytes(pixels, w2, h2, crop=None,
     data = buf.getvalue(); buf.close()
     ew, eh = img.size
     scales = {"scale": round(scale, 6),
-              "scale_x": round(w2 / ew, 6) if ew else 1.0,
-              "scale_y": round(h2 / eh, 6) if eh else 1.0,
+              "scale_x": round(source_width / ew, 6),
+              "scale_y": round(source_height / eh, 6),
               "width": ew, "height": eh}
     return data, scales
 
@@ -957,93 +958,73 @@ def find_text_target(top: int) -> "tuple[int, str]":
     return found[0], "first-descendant (all known read-only)"
 
 
+def _matches_text_insertion(before: str, after: str, text: str) -> bool:
+    """Whether the readback is consistent with inserting the entire text at one position."""
+    if len(after) - len(before) != len(text):
+        return False
+    # The unchanged suffix sets the earliest possible insertion point and the unchanged
+    # prefix sets the latest. There can be several candidates when text repeats.
+    prefix = next((i for i, (a, b) in enumerate(zip(before, after)) if a != b), len(before))
+    suffix = next((i for i, (a, b) in enumerate(zip(reversed(before), reversed(after)))
+                   if a != b), len(before))
+    return after.find(text, len(before) - suffix, prefix + len(text)) != -1
+
+
 def type_text(hwnd: int, text: str, delay: float = 0.01) -> dict:
-    """Type into a window's text control, char-by-char via PostMessage.
+    """Post text to the resolved control without activating or restoring its window.
 
-    MUTATING (soft gate): takes the cross-process mutex and may raise the window
-    (_ensure_visible), but skips the input-quiet wait — PostMessage does not enter
-    the user's input stream. Note the honest limit: the raise can still take focus
-    while the user is typing; that is what a future prevent_activation gate is for.
-
-    The text control is RESOLVED rather than assumed, and the effect is READ BACK. A
-    caller can only name a top-level window (`find_window` / `list_windows` return
-    top-level handles) and a `WM_CHAR` posted to one never reaches its child edit, so this
-    used to post into nothing and return `ok: True`. See the block comment above.
-
-    What `effect_verified` means here, precisely: the control's text was read before and
-    after, and it CHANGED. That is not proof that these characters are the change — the window
-    has just been raised and a human may be typing into it, and an application may update its
-    own control — so a length that does not account for the text sent is reported in
-    `effect_note` instead of being presented as success. `None` means the text could not be
-    read back (no WndProc-backed control in the window, or one that did not answer within the
-    timeout) and the effect is UNCONFIRMED, which is not the same as failed.
+    The soft gate serializes operations across processes. `typed` counts characters
+    accepted by PostMessage; `effect_verified` reports what the control readback showed.
     """
+    if not hwnd:
+        return {"ok": False, "reason": "invalid-window", "action_sent": False,
+                "typed": 0, "text_length": len(text), "effect_verified": False,
+                "error": "No target window is available."}
     gate = arbiter.admit_mutating(hard=False)
     if not gate.get("ok"):
         return {"ok": False, "reason": gate.get("reason"), "hwnd": hwnd,
-                "typed": 0, "text_length": len(text),
+                "typed": 0, "text_length": len(text), "action_sent": False,
                 "arbiter": arbiter.receipt(gate),
                 "error": gate.get("error")}
     try:
         fg_before = foreground_root()
-        raise_info = _ensure_visible(hwnd)
         target, resolved_by = find_text_target(hwnd)
         dest = target or hwnd
         before = _read_control_text(dest) if target else None
+        typed = 0
         for ch in text:
-            user32.PostMessageW(w.HWND(dest), WM_CHAR, ord(ch), 0)
-            if delay > 0: time.sleep(delay)
-        after = _read_control_text(dest) if target else None
-        effect_verified = None
-        if before is not None and after is not None:
-            effect_verified = after != before
-        out = {"ok": True, "reason": "typed", "hwnd": hwnd, "target_hwnd": dest,
-               "resolved_by": resolved_by or None,
-               "typed": len(text), "text_length": len(text),
-               "effect_verified": effect_verified,
+            if not user32.PostMessageW(w.HWND(dest), WM_CHAR, ord(ch), 0):
+                break
+            typed += 1
+            if delay > 0:
+                time.sleep(delay)
+
+        posted_all = typed == len(text)
+        after = _read_control_text(dest) if posted_all and target else None
+        out = {"ok": posted_all, "reason": "posted", "hwnd": hwnd, "target_hwnd": dest,
+               "resolved_by": resolved_by or None, "typed": typed, "text_length": len(text),
+               "action_sent": typed > 0, "effect_verified": None,
                "foreground_changed": foreground_root() != fg_before,
-               "raise": raise_info,
+               "raise": {"raised": False, "method": "not-attempted", "addressed": hwnd},
                "arbiter": arbiter.receipt(gate)}
-        if effect_verified is False:
-            out["ok"] = False
-            out["reason"] = "no-effect"
-            # Deliberately neutral. `after == before` is evidence that the text did not land and
-            # no evidence at all about WHY; the previous wording led with "the control is
-            # read-only", which was a guess presented as a diagnosis.
-            out["error"] = (f"posted {len(text)} character(s) to {dest} but its text did not "
-                            f"change (still {before[:60]!r}). The text did not land; this "
-                            f"receipt does not say why. Known causes, in no particular order: "
-                            f"the control is read-only or disabled; a maximum length or an "
-                            f"input mask rejected the characters; the control was destroyed "
-                            f"between the two reads; or it does not consume posted WM_CHAR.")
-            out["before"] = before[:80]
-            out["after"] = after[:80]
-        elif effect_verified is None:
-            if not target:
-                out["effect_note"] = (
-                    "the characters were posted to the window itself: no WndProc-backed text "
-                    "control was found inside it, so there is nothing to read back and the "
-                    "effect is UNCONFIRMED. Pass the control's own hwnd if you have it.")
+        if not posted_all:
+            out["reason"] = "partial-post" if typed else "post-failed"
+            out["error"] = (f"PostMessageW rejected character {typed + 1} for window {dest}. "
+                            f"Stopped after posting {typed} of {len(text)} characters.")
+            if typed:
+                out["effect_note"] = "Inspect the target before retrying. The posted prefix may have landed."
             else:
-                out["effect_note"] = (
-                    f"the control {dest} did not answer WM_GETTEXT within {_SEND_TIMEOUT_MS} "
-                    f"ms, so the effect is UNCONFIRMED — which is not the same as failed. It "
-                    f"may be busy, hung or already destroyed.")
+                out["effect_verified"] = False
+        elif before is None or after is None:
+            out["effect_note"] = "The messages were posted, but the control's text could not be read back."
+        elif after == before:
+            out.update(ok=False, reason="no-effect", effect_verified=False,
+                       error=f"All characters were posted to {dest}, but readback found the same text.",
+                       before=before[:80], after=after[:80])
+        elif _matches_text_insertion(before, after, text):
+            out["effect_verified"] = True
         else:
-            # `after != before` proves the control's text CHANGED. It does not prove that OUR
-            # characters are the change: `_ensure_visible` has just brought this window forward
-            # and a human may be typing into it, and the application may update the control on
-            # its own. Length is the cheap check available, so a mismatch is reported rather than
-            # presenting a coincidental change as this call's success.
-            delta = len(after) - len(before)
-            if delta != len(text):
-                out["effect_note"] = (
-                    f"the control's text changed, but its length moved by {delta:+d} where "
-                    f"{len(text)} character(s) were sent, so the change is real but it is not a "
-                    f"plain insertion of this text. It may have been truncated by a maximum "
-                    f"length, partly rejected by an input mask, inserted over a selection, or "
-                    f"changed by something else entirely (the window was just raised, and a "
-                    f"human may be typing in it). before={before[:40]!r} after={after[:40]!r}")
+            out["effect_note"] = "The text changed, but readback could not confirm insertion of the full request."
         return out
     finally:
         gate["release"]()

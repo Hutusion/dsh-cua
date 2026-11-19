@@ -75,10 +75,8 @@ python tests/linux-handshake.py
    （可观测的让行窗是 400 ms 级，只有硬门有）。录屏/演示只依赖硬门这一条。
    **但软门工具仍可能抬窗口**：`_ensure_visible`（`bridge.py:275`）会调 `SetForegroundWindow`
    （`:301`/`:315`），而它**不是输入事件**，`GetLastInputInfo` 测不到——这一点由 `arbiter.py:39` 自己写明。
-   当前代码里"走软门但仍会尝试抬窗口"的至少有 `send_alt_key`（门 `:649`，抬窗 `:662`）与
-   `type_text`（门 `:958`，抬窗 `:966`）。**用户正在用电脑时不要调它们**：最好情况是抬窗失败
-   （Windows 前台锁下 `SetForegroundWindow` 常**静默失败**并返回 0），最坏情况是**把他正在看的窗口掀掉**。
-   → 这是本项目对外宣称的差异点所在，也是已知未修项 **O02**（另有 D3：该函数的注释说"所有比较都经
+   `type_text` 直接向控件投递消息，跳过抬窗。`send_alt_key` 仍会走软门并尝试抬窗，用户正在使用电脑时应避免调用。
+   → `send_alt_key` 仍属于已知未修项 **O02**（另有 D3：该函数的注释说"所有比较都经
    `_root()`"，但 `SetForegroundWindow`/`BringWindowToTop` 实际仍传原始子 hwnd）。
 5. **临时产物写 `%TEMP%`**，不要落进仓库。发布产物曾因为沙箱给 `dist\` 的 ACL 掩码缺 `READ_CONTROL`
    而读不动，最后改成在 `%TEMP%` 重建。

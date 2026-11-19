@@ -130,7 +130,7 @@ def tool_find_window(title: str = "") -> dict[str, Any]:
     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 5)
     return {"success": True, "hwnd": hwnd, "title": buf.value, **rect}
 
-@mcp.tool(description="Capture a window screenshot and SAVE IT TO A FILE. Provide hwnd or title substring. Crops to the window's CLIENT area by default, so image pixel (0,0) is the same point click_at calls (0,0) — no frame offset to guess. Returns bounds = the screen rect (x,y,width,height) the image maps to, plus `scale` (multiply image pixels by it to get screen pixels; 1.0 unless you asked for downscaling). Also reports dpi_verified; when false, image pixels and input coordinates cannot be safely paired. Defaults to JPEG q80 — a 1080p shot is ~6-10x smaller than PNG, which is what keeps a long session's request body under the provider's 32 MiB cap. The bytes are NOT inlined as base64 by default (that costs ~12,500 tokens per shot as text); read the saved_path with read_image instead, which attaches the same picture for ~50 tokens. Pass include_data_uri=true only when a caller genuinely cannot read a file. Read-only — no input injection, no focus change.")
+@mcp.tool(description="Capture a window screenshot and SAVE IT TO A FILE. Provide hwnd or title substring. Crops to the window's CLIENT area by default, so image pixel (0,0) is the same point click_at calls (0,0) — no frame offset to guess. Returns bounds = the screen rect (x,y,width,height) the image maps to, and per-axis `scale_x` and `scale_y`. Multiply image coordinates by the corresponding scale and then add the bounds origin to get screen coordinates. Cropping alone does not change either scale. Also reports dpi_verified; when false, image pixels and input coordinates cannot be safely paired. Defaults to JPEG q80 — a 1080p shot is ~6-10x smaller than PNG, which is what keeps a long session's request body under the provider's 32 MiB cap. The bytes are NOT inlined as base64 by default (that costs ~12,500 tokens per shot as text); read the saved_path with read_image instead, which attaches the same picture for ~50 tokens. Pass include_data_uri=true only when a caller genuinely cannot read a file. Read-only — no input injection, no focus change.")
 def tool_capture_window(hwnd: int = 0, title: str = "", save_path: str = "", client_only: bool = True,
                         image_format: str = "jpeg", quality: int = 80, max_dim: int = 0,
                         include_data_uri: bool = False) -> dict[str, Any]:
@@ -298,13 +298,20 @@ def tool_click_at(x: int = 0, y: int = 0, hwnd: int = 0, title: str = "",
             "attempts": attempts, "time_ms": elapsed}
 
 @mcp.tool(description="Perform an action on a UI element by the `ref` from element_at_point — this is the focus-free path: a UI Automation pattern is delivered to the element, so the window is never raised and z-order never matters. MUTATING (soft): serialized across agent sessions; NO physical input is injected, so it can run while the user types — just do not operate the very window the user is working in. `action` must be one of the actions listed for that element (press, set_value, select, toggle, expand, collapse, scroll_into_view, focus); `set_value` also needs `text`. Refuses with the supported list when the element does not offer the action.")
-async def tool_element_action(ref: str, action: str, text: str = "") -> dict[str, Any]:
+async def tool_element_action(ref: str, action: str, text: str | None = None) -> dict[str, Any]:
     if not uia.available().get("available"):
         return {"success": False, "reason": "uia_unavailable", **uia.available()}
-    res = uia.element_action(ref, action, text if text else None)
+    res = uia.element_action(ref, action, text)
     return {"success": bool(res.get("ok")), **res}
 
-@mcp.tool(description="Type a text string into a window character-by-character (window-targeted PostMessage, not global keystrokes). The text control inside the window is resolved automatically — a top-level window does not forward WM_CHAR to its child edit, so passing a window handle alone used to post into nothing — and the control's text is read back so `effect_verified` says whether the text actually landed. MUTATING (soft): serialized across agent sessions; no physical input is injected so it can run while the user types — but the window may be RAISED to foreground, so avoid typing into a window the user is currently working in.")
+@mcp.tool(description=(
+    "Post text to a window's text control without activating or restoring its window. "
+    "MUTATING (soft): serialized across agent sessions. No physical input is injected. "
+    "On PostMessage failure, stops at the first rejected character and returns how many "
+    "were queued in typed. A partial post may already have edited the target. Inspect it "
+    "before retrying. effect_verified reports whether readback confirmed the requested "
+    "insertion. Some applications require their window to be active to process text."
+))
 def tool_type_text(text: str = "", hwnd: int = 0, title: str = "", delay_ms: int = 10) -> dict[str, Any]:
     if not text: return {"success": False, "error": "No text provided"}
     if hwnd == 0 and title:
@@ -383,11 +390,11 @@ async def tool_skyshot(hwnd: int = 0, title: str = "", disable_diff: bool = Fals
     "Actions: press, set_value, select, toggle, expand, collapse, scroll_into_view, focus. "
     "set_value also needs text."
 ))
-async def tool_element_action_at(hwnd: int, index: int, action: str, text: str = "",
+async def tool_element_action_at(hwnd: int, index: int, action: str, text: str | None = None,
                                  shot_id: str = "") -> dict[str, Any]:
     if not uia.available().get("available"):
         return {"success": False, "reason": "uia_unavailable", **uia.available()}
-    res = uia.element_action_at(hwnd, index, action, text if text else None, shot_id=shot_id)
+    res = uia.element_action_at(hwnd, index, action, text, shot_id=shot_id)
     return {"success": bool(res.get("ok")), **res}
 
 @mcp.tool(description="Find UI elements by role and/or name substring and return refs that can be acted on with element_action. This is how you reach an element that cannot be hit-tested — the point of naming it is that you no longer need a pixel. `role` is the lowercase role from skyshot (button, edit, document, list_item, ...). At least one filter is required: an unfiltered call would be a tree dump, so use skyshot for that. The result reports `minimized` — a minimized window does not always expose its full tree, so a zero here is not proof that nothing matches. Read-only.")

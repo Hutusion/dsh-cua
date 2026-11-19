@@ -3,7 +3,7 @@
 Audited defects (audit B):
   1. `bridge.type_text(top_level_hwnd, ...)` posted WM_CHAR into nothing and returned
      ok=True — a silent failure on 5/5 targets.
-  2. `bridge.type_text` discarded `_ensure_visible`'s rich result, so the raise was invisible.
+  2. `bridge.type_text` raised the target window while posting text.
   3. `_ensure_visible(child_hwnd)` always reported {"raised": false, "method": "failed"}
      because it compared a ROOT reduction against a child hwnd.
 
@@ -140,10 +140,10 @@ def main() -> int:
               f"(edit={edit}) effect_verified={r.get('effect_verified')} "
               f"text {before!r} -> {after!r}")
 
-        # 2. The receipt must now carry the raise + foreground change.
-        check("2. receipt carries raise + foreground_changed",
-              isinstance(r.get("raise"), dict) and "raised" in r["raise"]
-              and "foreground_changed" in r,
+        # 2. Targeted posting must leave activation to the application and the user.
+        check("2. type_text skips activation",
+              r.get("raise", {}).get("method") == "not-attempted"
+              and r.get("foreground_changed") is False,
               f"raise={r.get('raise')} foreground_changed={r.get('foreground_changed')}")
 
         # 3. An explicit control target still works.
