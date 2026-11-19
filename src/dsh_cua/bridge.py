@@ -237,7 +237,7 @@ def _root(hwnd: int) -> int:
 
 def window_at_point(screen_x: int, screen_y: int) -> int:
     """Top-level window that owns a screen point — i.e. who receives a click there."""
-    return _root(int(user32.WindowFromPoint(POINT(screen_x, screen_y))))
+    return _root(int(user32.WindowFromPoint(POINT(screen_x, screen_y)) or 0))
 
 def _foreground_hwnd() -> int:
     """The raw foreground window as an int, with NULL normalised to 0.
@@ -678,8 +678,8 @@ def click(hwnd: int, client_x: int, client_y: int,
 
     `mouse_event` emits at the cursor, so the click is received by whatever is
     TOPMOST at that screen point — the passed `hwnd` only supplies the coordinate
-    transform. A click that lands elsewhere used to return success; now the target
-    is verified first and a mismatch is reported instead of clicked.
+    transform. Before pressing the button, verify that the move succeeded, the
+    cursor reached the requested point, and the addressed window still owns it.
 
     `dry_run=True` performs the whole check and reports where the click WOULD land
     without moving the cursor, clicking, or taking any gate.
@@ -720,19 +720,20 @@ def _click_impl(hwnd: int, client_x: int, client_y: int,
     if not dry_run:
         raise_info = _ensure_visible(hwnd)
     owner = window_at_point(screen_x, screen_y)
-    target_ok = owner == _root(hwnd)
+    target_root = _root(hwnd)
     result = {
-        "ok": False, "hwnd": hwnd, "client_x": client_x, "client_y": client_y,
+        "ok": False, "action_sent": False,
+        "hwnd": hwnd, "client_x": client_x, "client_y": client_y,
         "screen_x": screen_x, "screen_y": screen_y,
-        "window_at_point": owner, "target_root": _root(hwnd),
+        "window_at_point": owner, "target_root": target_root,
         "foreground_root": foreground_root(), "raise": raise_info,
         "dry_run": dry_run,
     }
-    if require_target and not target_ok:
+    if require_target and (not target_root or owner != target_root):
         result["reason"] = "target-not-foreground"
         result["error"] = (
             f"refusing to click: screen point ({screen_x},{screen_y}) belongs to window "
-            f"{owner}, not to the addressed window {hwnd} (root {_root(hwnd)}). "
+            f"{owner}, not to the addressed window {hwnd} (root {target_root}). "
             f"The addressed window is not on top at that point; bring it forward or "
             f"re-check coordinates. Nothing was clicked."
         )
@@ -751,10 +752,32 @@ def _click_impl(hwnd: int, client_x: int, client_y: int,
             f"ago — inside the {arbiter.FINAL_QUIET_MS}ms pre-injection window. "
             f"Nothing was clicked; retry when they are idle.")
         return result
-    user32.SetCursorPos(screen_x, screen_y); time.sleep(0.005)
+    if not user32.SetCursorPos(screen_x, screen_y):
+        return {**result, "reason": "cursor-move-failed",
+                "error": f"SetCursorPos failed for ({screen_x},{screen_y}). Nothing was clicked."}
+    time.sleep(0.005)
+
+    cursor = POINT()
+    if not user32.GetCursorPos(byref(cursor)):
+        return {**result, "reason": "cursor-position-unavailable",
+                "error": "GetCursorPos failed after the move. Nothing was clicked."}
+    # Windows can clamp a successful move, and the user can move the shared cursor.
+    if (cursor.x, cursor.y) != (screen_x, screen_y):
+        return {**result, "reason": "cursor-position-mismatch",
+                "error": (f"Cursor is at ({cursor.x},{cursor.y}); expected ({screen_x},{screen_y}). "
+                          "Nothing was clicked.")}
+    if require_target:
+        owner = window_at_point(cursor.x, cursor.y)
+        result["window_at_point"] = owner
+        if owner != target_root:
+            return {**result, "reason": "target-not-foreground",
+                    "error": (f"Window {target_root} no longer owns ({screen_x},{screen_y}); "
+                              f"current owner is {owner}. Nothing was clicked.")}
+
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); time.sleep(0.005)
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); time.sleep(0.02)
     result["ok"] = True
+    result["action_sent"] = True
     result["reason"] = "clicked"
     return result
 

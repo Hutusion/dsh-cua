@@ -59,7 +59,10 @@ A stdio MCP server exposing 19 tools. Every tool name is prefixed `tool_`, exact
   `tool_send_keys`' global hotkeys. The gate waits for the machine to go input-quiet, then refuses
   with `user-active` rather than fight you for the cursor. `tool_click_at` tries its **element path
   first** (`ax_press`), which injects no physical input and therefore takes the mutex only; the
-  receipt's `method` field says which path actually ran.
+  receipt's `method` field says which path actually ran. Before a raw click presses the mouse
+  button, it verifies that the cursor move succeeded, the cursor reached the requested point,
+  and that point still belongs to the target window. If any check fails, it returns
+  `success: false` and `action_sent: false` without sending a mouse-button event.
 
 "Read-only" here means it takes no mutating action and synthesizes no input, so it is safe to
 call while someone is using the machine. Two of them have a side effect worth knowing:

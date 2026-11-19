@@ -32,7 +32,10 @@ import re
 import subprocess
 import sys
 import time
+from ctypes import POINTER, cast
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(REPO, "src")
@@ -350,6 +353,53 @@ finally:
 check("a dry run injected no input", calls == [], str(calls))
 check("a dry run against a bogus window refuses instead of clicking",
       dry.get("ok") is False, str(dry.get("reason")))
+
+
+def raw_click_receipt(*, move_ok=True, readback=(20, 30), owner_after=123):
+    def get_cursor_pos(point):
+        if readback is None:
+            return False
+        cursor = cast(point, POINTER(bridge.POINT)).contents
+        cursor.x, cursor.y = readback
+        return True
+
+    win32 = SimpleNamespace(
+        ClientToScreen=Mock(return_value=True),
+        WindowFromPoint=Mock(side_effect=[123, owner_after]),
+        GetAncestor=Mock(side_effect=lambda hwnd, _flag: hwnd.value),
+        SetCursorPos=Mock(return_value=move_ok),
+        GetCursorPos=Mock(side_effect=get_cursor_pos),
+        mouse_event=Mock(),
+    )
+    release = Mock()
+    with patch.multiple(bridge, user32=win32,
+                        foreground_root=lambda: 123,
+                        _ensure_visible=lambda _hwnd: {"raised": True}), \
+            patch.object(arbiter, "admit_mutating", return_value={"ok": True, "release": release}), \
+            patch.object(arbiter, "input_recently", return_value={"recent": False}):
+        receipt = srv.tool_click_at(20, 30, hwnd=123, prefer="raw")
+    release.assert_called_once_with()
+    return receipt, [call.args[0] for call in win32.mouse_event.call_args_list]
+
+
+print("\nRAW CLICK — refuse if the cursor or its target cannot be verified")
+for expected_reason, scenario in (
+    ("cursor-move-failed", {"move_ok": False}),
+    ("cursor-position-unavailable", {"readback": None}),
+    ("cursor-position-mismatch", {"readback": (19, 30)}),
+    ("target-not-foreground", {"owner_after": 456}),
+    ("target-not-foreground", {"owner_after": None}),
+):
+    receipt, buttons = raw_click_receipt(**scenario)
+    check(f"{scenario} returns {expected_reason} and sends no mouse events",
+          receipt.get("success") is False and receipt.get("reason") == expected_reason
+          and receipt.get("action_sent") is False and not buttons,
+          f"success={receipt.get('success')} reason={receipt.get('reason')} buttons={buttons}")
+
+receipt, buttons = raw_click_receipt()
+check("a verified raw click sends one down/up pair",
+      receipt.get("success") is True and receipt.get("method") == "raw_event"
+      and buttons == [bridge.MOUSEEVENTF_LEFTDOWN, bridge.MOUSEEVENTF_LEFTUP], str(buttons))
 
 print()
 if failures:
