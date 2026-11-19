@@ -119,6 +119,10 @@ concentrated on one thing: **sharing a machine with a human.**
 `effect_verified` reports the result of readback. `true` means the requested state or transition
 was observed, `false` means the result did not satisfy the request, and `null` means the effect
 is unconfirmed. For `set_value`, readback checks the requested value, including an empty string.
+For a known foreground target with a different initial state, UIA actions with an explicit
+target state can return as soon as readback matches. Other cases retain the 250 ms observation
+window. `foreground_observation_ms` gives the time between the action returning and the
+foreground sample, so `foreground_changed` describes the foreground at that point.
 
 **What dsh-cua does not do** (stated up front to avoid misunderstanding): no grounding of its
 own — the server does not analyse pixels, so **a text-only model** cannot drive interfaces that

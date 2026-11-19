@@ -263,6 +263,8 @@ def warm_up(hwnd: int, max_nodes: int = 1200) -> dict:
         return {"warmed": True, "cached": True}
     try:
         root = _uia().ElementFromHandle(hwnd)
+        if not root:
+            return {"warmed": False, "error": f"UI Automation could not resolve window {hwnd}"}
         walker = _uia().ControlViewWalker
         count = 0
         stack = [root]
@@ -271,7 +273,8 @@ def warm_up(hwnd: int, max_nodes: int = 1200) -> dict:
             count += 1
             try:
                 child = walker.GetFirstChildElement(el)
-                while child is not None:
+                # comtypes also represents a null COM interface as a false-valued pointer.
+                while child:
                     stack.append(child)
                     child = walker.GetNextSiblingElement(child)
             except Exception:
@@ -297,7 +300,7 @@ def element_at_point(screen_x: int, screen_y: int, *, register: bool = True,
         pt.x = int(screen_x)
         pt.y = int(screen_y)
         el = uia.ElementFromPoint(pt)
-        if el is None:
+        if not el:
             return {"ok": False, "reason": "no_element_at_point",
                     "error": f"nothing at ({screen_x},{screen_y})"}
 
@@ -310,6 +313,9 @@ def element_at_point(screen_x: int, screen_y: int, *, register: bool = True,
             info = warm_up(hwnd) if hwnd else {"warmed": False}
             if info.get("warmed"):
                 el = uia.ElementFromPoint(pt)
+                if not el:
+                    return {"ok": False, "reason": "no_element_at_point",
+                            "error": f"nothing at ({screen_x},{screen_y}) after warming"}
                 payload = describe(el)
                 payload["warmed_up"] = True
 
@@ -472,6 +478,8 @@ EFFECT_STATE = {
     "expand": ("iface_expand_collapse", "CurrentExpandCollapseState", 1),
     "collapse": ("iface_expand_collapse", "CurrentExpandCollapseState", 0),
 }
+_ACTION_OBSERVATION_SECONDS = 0.25
+_ACTION_POLL_SECONDS = 0.04
 
 
 def element_action(ref: str, action: str, text: Optional[str] = None,
@@ -571,6 +579,10 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
             before = None
 
     fg_before = _foreground_root()
+    read_early = False
+    if fg_before and before is not None and expect is not None and before != expect:
+        hwnd = int(_safe(lambda: el.CurrentNativeWindowHandle, 0) or 0)
+        read_early = _root_hwnd(hwnd) == fg_before
     try:
         if action == "focus":
             el.SetFocus()
@@ -584,23 +596,33 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
         return {"ok": False, "reason": "action_failed", "action_sent": False,
                 "action": action, "ref": ref, "effect_verified": False,
                 "error": f"{type(exc).__name__}: {exc}"}
-    time.sleep(0.25)
-    fg_after = _foreground_root()
-
-    # Check the effect where the pattern exposes state.
-    effect_verified = None
+    dispatched_at = time.monotonic()
     after = None
-    if state_attr is not None:
-        try:
-            iface = getattr(_wrapper_for(el), state_attr)
+    if read_early:
+        # Poll the state of the single dispatched action. A mismatch or unreadable
+        # state stays provisional until the original observation window ends.
+        deadline = dispatched_at + _ACTION_OBSERVATION_SECONDS
+        while True:
             after = _safe(lambda: getattr(iface, state_prop), None)
-            if after is not None:
-                if expect is not None:
-                    effect_verified = after == expect
-                elif before is not None:
-                    effect_verified = after != before
-        except Exception:
-            effect_verified = None
+            remaining = deadline - time.monotonic()
+            if after == expect or remaining <= 0:
+                break
+            time.sleep(min(_ACTION_POLL_SECONDS, remaining))
+    else:
+        # Retain the observation window for background/unknown targets and actions
+        # where an early sample cannot confirm a change to an explicit target state.
+        time.sleep(_ACTION_OBSERVATION_SECONDS)
+    fg_after = _foreground_root()
+    foreground_observation_ms = round((time.monotonic() - dispatched_at) * 1000, 1)
+    if not read_early and state_attr is not None:
+        after = _safe(lambda: getattr(getattr(_wrapper_for(el), state_attr), state_prop), None)
+
+    effect_verified = None
+    if after is not None:
+        if expect is not None:
+            effect_verified = after == expect
+        elif before is not None:
+            effect_verified = after != before
 
     out = {"ok": True, "action_sent": True, "ref": ref, "action": action,
            "method": method or "SetFocus", "effect_verified": effect_verified,
@@ -609,6 +631,7 @@ def _element_action_impl(ref: str, action: str, text: Optional[str] = None,
            # a value on Win11 Notepad's document did bring it forward. So measure and
            # report rather than claim, and let the caller decide what to do about it.
            "foreground_changed": fg_after != fg_before,
+           "foreground_observation_ms": foreground_observation_ms,
            "activated_target": (fg_after != fg_before
                                 and fg_after == _root_hwnd(
                                     int(_safe(lambda: el.CurrentNativeWindowHandle, 0) or 0))),
@@ -880,7 +903,7 @@ def _walk(hwnd: int, *, max_nodes: int, max_depth: int, include_offscreen: bool,
             child = walker.GetFirstChildElement(el)
         except Exception:
             return
-        while child is not None:
+        while child:
             visit(child, depth + 1)
             if len(records) >= max_nodes:
                 truncated = True
@@ -890,7 +913,10 @@ def _walk(hwnd: int, *, max_nodes: int, max_depth: int, include_offscreen: bool,
             except Exception:
                 return
 
-    visit(uia.ElementFromHandle(hwnd), 0)
+    root = uia.ElementFromHandle(hwnd)
+    if not root:
+        raise RuntimeError(f"UI Automation could not resolve window {hwnd}")
+    visit(root, 0)
     return records, truncated
 
 

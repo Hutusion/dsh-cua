@@ -286,6 +286,51 @@ check("newlines and tabs are escaped, payload still visible",
       "\\n" in line and "\\t" in line and "EVIL" in line, repr(line))
 check("a value with CRLF cannot break the line either", "\\r" in line, repr(line))
 
+print("\nUIA TREE — null interface pointers do not become elements")
+null_element = POINTER(bridge.POINT)()
+tree_root, first_child, second_child = object(), object(), object()
+tree_walker = SimpleNamespace(
+    GetFirstChildElement=Mock(side_effect=lambda el: first_child if el is tree_root else null_element),
+    GetNextSiblingElement=Mock(side_effect=lambda el: second_child if el is first_child else null_element),
+)
+tree_client = SimpleNamespace(ControlViewWalker=tree_walker,
+                              ElementFromHandle=Mock(return_value=tree_root))
+node_reader = Mock(return_value={"role": "edit", "name": "fixture", "automation_id": "",
+                                 "enabled": True, "offscreen": False, "value": None,
+                                 "focused": False, "settable": False})
+with (patch.multiple(uia, _uia=lambda: tree_client, _warmed={}, _node_of=node_reader),
+      patch.object(uia.time, "sleep")):
+    entries, truncated = uia._walk(101, max_nodes=4, max_depth=10,
+                                   include_offscreen=True, include_values=False)
+    warm = uia.warm_up(101, max_nodes=4)
+    check("the control view skips null pointers without spending the node budget",
+          [r["element"] for r in entries] == [tree_root, first_child, second_child]
+          and [r["index"] for r in entries] == [0, 1, 2] and not truncated
+          and node_reader.call_count == 3)
+    check("warmup counts live elements only", warm.get("nodes_seen") == 3, repr(warm))
+    tree_client.ElementFromHandle.return_value = null_element
+    warm = uia.warm_up(102)
+    check("warmup refuses a null root and does not cache it", not warm.get("warmed") and 102 not in uia._warmed)
+    try:
+        uia._walk(102, max_nodes=4, max_depth=10, include_offscreen=True, include_values=False)
+    except RuntimeError as exc:
+        check("the control view refuses a null root", "could not resolve window" in str(exc))
+    else:
+        check("the control view refuses a null root", False)
+
+for point_hits in ([null_element], [first_child, null_element]):
+    point_client = SimpleNamespace(ElementFromPoint=Mock(side_effect=point_hits))
+    with (patch.multiple(uia, _AVAILABLE=True, _uia=lambda: point_client,
+                         _CONTAINER_TYPE_IDS={42},
+                         describe=lambda el: {"control_type_id": 42, "name": ""},
+                         _register=Mock(), warm_up=Mock(return_value={"warmed": True})),
+          patch.object(uia, "tagPOINT", SimpleNamespace, create=True),
+          patch.object(uia, "_safe", return_value=101)):
+        point_result = uia.element_at_point(1, 1)
+        check("a null hit-test pointer is refused before a reference is registered",
+              point_result.get("reason") == "no_element_at_point" and not uia._register.called,
+              repr(point_result))
+
 # ---------------------------------------------------------------- arbiter: logic
 print("\nARB — decision logic (no input, no focus)")
 
@@ -525,6 +570,69 @@ for label, name, before, after, arguments, sent, success, verified in (
 with patch.object(uia, "element_action_at", return_value={"ok": True}) as set_by_index:
     asyncio.run(srv.tool_element_action_at(101, 1, "set_value", text="", shot_id="fixture"))
     check("the Skyshot tool forwards explicit empty text", set_by_index.call_args.args[3] == "")
+
+print("\nUIA TIMING — finish early only on a verified foreground action")
+
+
+def timed_element_action(action="set_value", *, hwnd=101, before="old",
+                         readback=lambda _t: "target", activates_at=None):
+    elapsed = 0.0
+
+    def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    def foreground():
+        return hwnd if activates_at is not None and elapsed >= activates_at else 101
+
+    send = Mock()
+    capability, attr, method = uia.ACTION_MAP[action]
+
+    class Pattern(SimpleNamespace):
+        pass
+
+    pattern = Pattern(CurrentIsReadOnly=False)
+    if method:
+        setattr(pattern, method, send)
+    elm = SimpleNamespace(CurrentNativeWindowHandle=hwnd, SetFocus=send)
+    if action in uia.EFFECT_STATE:
+        _, prop, _ = uia.EFFECT_STATE[action]
+        setattr(Pattern, prop, PropertyMock(side_effect=lambda: readback(elapsed) if send.called else before))
+    wrapper = SimpleNamespace(**{attr: pattern} if attr else {})
+    with (patch.multiple(uia, _AVAILABLE=True, ACTIONS_ENABLED=True,
+                         _foreground_root=foreground, _root_hwnd=lambda h: h,
+                         resolve=lambda _ref: {"ok": True, "element": elm},
+                         describe=lambda _el: {"name": "fixture", "role": "edit", "rect": None,
+                                               "actions": [capability]},
+                         _wrapper_for=lambda _el: wrapper),
+          patch.object(uia.time, "monotonic", side_effect=lambda: elapsed),
+          patch.object(uia.time, "sleep", side_effect=advance)):
+        result = asyncio.run(srv.tool_element_action("ref", action, text="target" if action == "set_value" else None))
+    send.assert_called_once()
+    return result
+
+
+for timing_case, args, verified, elapsed_ms, foreground_changed in (
+    ("immediate foreground change", {}, True, 0, False),
+    ("delayed foreground change", {"readback": lambda t: "target" if t >= .08 else "old"}, True, 80, False),
+    ("readback becomes available", {"readback": lambda t: "target" if t >= .04 else None}, True, 40, False),
+    ("persistent mismatch", {"readback": lambda _t: "other"}, False, 250, False),
+    ("unreadable state", {"readback": lambda _t: None}, None, 250, False),
+    ("already at target", {"before": "target"}, True, 250, False),
+    ("background with late activation", {"hwnd": 202, "activates_at": .20}, True, 250, True),
+    ("unknown target window", {"hwnd": 0}, True, 250, False),
+    ("press", {"action": "press"}, None, 250, False),
+    ("focus", {"action": "focus"}, None, 250, False),
+    ("scroll", {"action": "scroll_into_view"}, None, 250, False),
+    ("toggle", {"action": "toggle", "before": 0, "readback": lambda _t: 1}, True, 250, False),
+    ("toggle without before", {"action": "toggle", "before": None, "readback": lambda _t: 1}, None, 250, False),
+):
+    result = timed_element_action(**args)
+    check(f"{timing_case} observes for {elapsed_ms} ms after one dispatch",
+          result.get("action_sent") is True and result.get("effect_verified") is verified
+          and result.get("foreground_observation_ms") == elapsed_ms
+          and result.get("foreground_changed") is foreground_changed
+          and result.get("activated_target") is foreground_changed, repr(result))
 
 
 print("\nCAPTURE — per-axis scales agree with the bounds of the encoded image")

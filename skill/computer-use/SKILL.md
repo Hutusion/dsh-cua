@@ -129,8 +129,9 @@ usable as a coordinate.
   Do not retry the same call; re-observe and pick a fresh target.
 - `effect_verified: null` — the effect is **unconfirmed**. Confirm it another way if it matters — read the window again, or use
   an external oracle such as the file or the server the action was supposed to affect.
-- `foreground_changed: true` — the action activated the window. On some apps this is unavoidable
-  (setting a value on Notepad's document does it). Report it rather than hide it.
+- `foreground_changed: true` — the foreground window differed at readback. For UIA actions,
+  `activated_target` says whether it became the target. `foreground_observation_ms` records
+  when the foreground was sampled after dispatch. A fast verified readback can shorten this window.
 - `value_read_only` — the element's value cannot be written. Pick a different element; retrying will
   not help.
 - `user-active` — the admission gate refused physical input because the user is actively using the
