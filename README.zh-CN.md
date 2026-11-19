@@ -58,6 +58,10 @@ Windows 电脑操控的 MCP 服务器 + agent 技能：**无障碍元素动作�
 每个动作返回**回执**而非自述成功：`action_sent` / `effect_verified` / `foreground_changed` /
 `user-active` / `arbiter-busy`。「调用被接受」和「效果发生」是两件事——工具替 agent 分清。
 
+调用 `tool_element_action_at` 时，须传入同一次 `tool_skyshot` 返回的 `hwnd`、`shot_id`，
+以及该响应中显示的元素编号。再次观测同一窗口后，旧 `shot_id` 即失效。差分用 `~` 标出重新编号的元素。
+如果目标未出现在差分中，用 `disable_diff=true` 重新获取完整树，再使用新返回的编号和 `shot_id`。
+
 ## 与同类有何不同
 
 Windows 侧已经有好几个成熟的开源实现。dsh-cua 的差异集中在**「和人类共用一台机器」**这一点上：

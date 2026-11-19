@@ -26,6 +26,7 @@ the user is working.
 
 usage:  python tests/ci-desktop-free.py
 """
+import asyncio
 import json
 import os
 import re
@@ -123,8 +124,6 @@ check("_line_text is available", hasattr(uia, "_line_text"))
 # not a source-level grep. It needs no desktop, so it can live in CI.
 print("\nID — the identity a client is shown (initialize/serverInfo)")
 try:
-    import asyncio
-
     from mcp.shared.memory import create_connected_server_and_client_session
 
     async def _handshake():
@@ -191,6 +190,86 @@ check("every printed index resolves to the line it names", not bad, str(bad))
 new_line = [l for l in text.splitlines() if "NEW" in l]
 check("an inserted element prints its real index (1), not a separate counter",
       bool(new_line) and re.match(r"^\+ \d+\t1 ", new_line[0]), str(new_line))
+
+# Exercise the public tools through MCP so both the input schema and the response are covered.
+print("\nSKYSHOT — only indices printed by the matching observation can be used")
+
+
+async def check_skyshot_actions():
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    def tree(*names):
+        return [{**rec(i, 1, "button", name), "element": name}
+                for i, name in enumerate(names, 1)], False
+
+    def acted(ref, _action, _text, **_kwargs):
+        return {"ok": True, "action_sent": True, "target": ref}
+
+    action = Mock(side_effect=acted)
+    with patch.multiple(
+        uia, _AVAILABLE=True, _root_hwnd=lambda hwnd: hwnd, _is_minimized=lambda _hwnd: False,
+        warm_up=Mock(), _window_title=lambda _hwnd: "fixture",
+        _window_identity=lambda hwnd: {"pid": hwnd, "class_name": "fixture"},
+        _walk=Mock(side_effect=[tree("A", "B", "C"), tree("X"), tree("B", "A", "C"),
+                                tree("B", "A", "C"), tree("B", "A", "C")]),
+        _differ=uia.SkyshotDiffer(), _shots={}, describe=lambda name: {"name": name},
+        _register=lambda name, _payload: name, element_action=action,
+    ):
+        async with create_connected_server_and_client_session(srv.mcp) as session:
+            await session.initialize()
+
+            async def tool(name, **arguments):
+                result = await session.call_tool(name, arguments)
+                if result.isError:
+                    raise RuntimeError(result.content)
+                return result.structuredContent
+
+            async def press(index, **arguments):
+                return await tool("tool_element_action_at", hwnd=101, index=index,
+                                  action="press", **arguments)
+
+            async def refuses(index, reason, **arguments):
+                sent = action.call_count
+                result = await press(index, **arguments)
+                check(f"{reason} refuses index {index} without dispatching an action",
+                      result.get("success") is False and result.get("action_sent") is False
+                      and result.get("reason") == reason and action.call_count == sent,
+                      repr(result))
+
+            original = await tool("tool_skyshot", hwnd=101)
+            other = await tool("tool_skyshot", hwnd=202)
+            original_id = original.get("shot_id", "original")
+            other_id = other.get("shot_id", "other")
+            check("a shot remains actionable after observing a different window",
+                  (await press(1, shot_id=original_id)).get("target") == "A")
+
+            swapped = await tool("tool_skyshot", hwnd=101)
+            swapped_id = swapped.get("shot_id", "swapped")
+            check("each observation returns a distinct shot_id",
+                  all(s.get("shot_id") for s in (original, other, swapped))
+                  and len({original_id, other_id, swapped_id}) == 3)
+            check("the diff prints the new indices for both reordered controls",
+                  "~ 1\t1 button B" in swapped["text"] and "~ 1\t2 button A" in swapped["text"],
+                  repr(swapped["text"]))
+            await refuses(1, "stale_shot", shot_id=original_id)
+            await refuses(1, "stale_shot", shot_id=other_id)
+            await refuses(1, "shot_id_required")
+            await refuses(3, "no_such_index", shot_id=swapped_id)
+            check("the new shot and its printed index address the intended control",
+                  (await press(2, shot_id=swapped_id)).get("target") == "A")
+
+            unchanged = await tool("tool_skyshot", hwnd=101)
+            await refuses(2, "stale_shot", shot_id=swapped_id)
+            await refuses(2, "no_such_index", shot_id=unchanged.get("shot_id", "unchanged"))
+            full = await tool("tool_skyshot", hwnd=101, disable_diff=True)
+            check("a full observation restores access to the unchanged control",
+                  (await press(3, shot_id=full.get("shot_id", "full"))).get("target") == "C")
+
+
+try:
+    asyncio.run(check_skyshot_actions())
+except Exception as exc:
+    check("skyshot action checks complete over MCP", False, f"{type(exc).__name__}: {exc}")
 
 # ------------------------------------------------------- escaping: forged tree line
 print("\nT4 — application text cannot forge a tree line")

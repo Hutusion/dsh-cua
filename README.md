@@ -82,6 +82,11 @@ Every action returns a **receipt** rather than a self-reported success: `action_
 accepted" and "the effect happened" are two different things, and the tool separates them for
 the agent.
 
+For `tool_element_action_at`, use the `hwnd`, `shot_id`, and an element index from the same
+`tool_skyshot` response. A newer observation of that window invalidates the previous `shot_id`.
+Diffs show renumbered elements with `~`. For an element omitted from a diff, take a full shot
+with `disable_diff=true` and use the index and `shot_id` it returns.
+
 ## How it differs
 
 There are already several mature open-source Windows implementations. dsh-cua's differences are

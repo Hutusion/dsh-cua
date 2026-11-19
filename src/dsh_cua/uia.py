@@ -19,7 +19,7 @@ DESIGN NOTES BORROWED FROM ZCODE (see spec/06)
     * The payload carries what an agent needs to decide: name, role, rect, and which
       actions the element actually supports.
     * `skyshot` is the one deliberate exception to "no tree dump", and it is a bounded
-      one: the tree is rendered as compact text with a stable index per line, and every
+      one: the tree is rendered as compact text with a positional index per line, and every
       shot after the first is a DIFF against the previous one. ZCode's reasoning is that
       an agent needs a readable surface it can point at, while a full tree on every turn
       would be unaffordable. See the skyshot section for the format and the diff rules.
@@ -46,6 +46,7 @@ import ctypes
 import threading
 import time
 from typing import Any, Optional
+from uuid import uuid4
 
 from . import arbiter  # coexistence gate: element actions take the cross-process mutex (soft)
 
@@ -700,17 +701,16 @@ def click_element_at_point(screen_x: int, screen_y: int, *,
 #     walk order of the shot it belongs to, so it can shift when the tree changes — it
 #     is not a durable handle. What is durable is the signature, which is why the diff
 #     matches on it.
-#   * unchanged                  -> omitted entirely (carries no index)
-#   * same signature, new text   -> "~ {depth}\t{index} {text}"   (index = this shot's)
-#   * no previous signature      -> "+ {depth}\t{index} {text}"   (index = this shot's)
-#   * disappeared                -> one line: "Removed element IDs: 3-7, 12"
+#   * same text and index          -> omitted entirely (carries no index)
+#   * changed text or index        -> "~ {depth}\t{index} {text}"   (index = this shot's)
+#   * no previous signature        -> "+ {depth}\t{index} {text}"   (index = this shot's)
+#   * disappeared                  -> one line: "Removed element IDs: 3-7, 12" (previous shot)
 #
 # The numbers on "~" and "+" lines are the CURRENT tree's indices, so an agent may act
 # on them directly. They used to come from a separate "next new element" counter, which
 # meant the documented loop — read the diff, act on the number it shows — pressed
-# whatever element held that positional index (measured 2026-09-20). Because indices are
-# positional, an index read from an older shot must be re-checked against a fresh one
-# when the tree may have changed.
+# whatever element held that positional index (measured 2026-09-20). An action must carry
+# the shot_id of the latest observation for the window and use an index printed in it.
 #
 # The signature is ZCode's `depth|role|name` PLUS the automation id when the element has
 # one. ZCode's three-field form is not unique among siblings, and the collision is not
@@ -728,8 +728,8 @@ def click_element_at_point(screen_x: int, screen_y: int, *,
 # point of reading a UI, but it means the returned text can contain whatever is on screen
 # in the addressed window — including text in fields. Callers should treat the output as
 # window content, not as metadata.
-SKYSHOT_DIFF_HEADER = ("The following is a diff from the previous accessibility tree "
-                       "(~ changed, + added).")
+SKYSHOT_DIFF_HEADER = ("Diff from the previous accessibility tree "
+                       "(~ changed or renumbered, + added).")
 
 
 def _window_identity(hwnd: int) -> dict:
@@ -950,7 +950,7 @@ class SkyshotDiffer:
             self._prev_max[key] = lines[-1]["index"] if lines else 0
             body = [f"{l['index']} {l['text']}" for l in lines]
             return {"text": "\n".join(([header] if header else []) + body),
-                    "is_diff": False, "lines": lines}
+                    "is_diff": False, "lines": lines, "shown_indices": {l["index"] for l in lines}}
 
         # Pair previous and current lines ONE-TO-ONE by signature. A dict/set collapses
         # duplicates, which made a deleted duplicate invisible: prev=[A,A] vs cur=[A]
@@ -960,6 +960,7 @@ class SkyshotDiffer:
         for l in prev:
             prev_pool.setdefault(l["sig"], []).append(l)
         matched = set()
+        shown_indices = set()
         out = [header] if header else []
         out.append(SKYSHOT_DIFF_HEADER)
         for l in lines:
@@ -973,10 +974,13 @@ class SkyshotDiffer:
             if pool:
                 p = pool.pop(0)
                 matched.add(id(p))
-                if p["text"] != l["text"]:
-                    out.append(f"~ {l['depth']}\t{l['index']} {l['text']}")
+                if p["text"] == l["text"] and p["index"] == l["index"]:
+                    continue
+                marker = "~"
             else:
-                out.append(f"+ {l['depth']}\t{l['index']} {l['text']}")
+                marker = "+"
+            out.append(f"{marker} {l['depth']}\t{l['index']} {l['text']}")
+            shown_indices.add(l["index"])
         removed = sorted(l["index"] for l in prev if id(l) not in matched)
         if removed:
             out.append(f"Removed element IDs: {_summarize_ranges(removed)}")
@@ -997,7 +1001,7 @@ class SkyshotDiffer:
         # `ambiguous` is machine-readable so a caller can require a full render instead
         # of trusting a diff whose lines may name the wrong index among siblings.
         return {"text": "\n".join(out), "is_diff": True, "lines": lines,
-                "ambiguous": bool(ambiguous)}
+                "shown_indices": shown_indices, "ambiguous": bool(ambiguous)}
 
 
 _differ = SkyshotDiffer()
@@ -1043,8 +1047,12 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
     # Windows reuses HWND values, so the number alone does not identify a window. The
     # shot records the process and class it was taken from; element_action_at re-reads
     # them before acting, and refuses when they changed (see _window_identity).
-    _shots[key] = {"records": records, "time": time.time(), "title": title,
-                   "identity": _window_identity(root)}
+    shot_id = uuid4().hex
+    shown_indices = rendered["shown_indices"]
+    _shots[key] = {
+        "id": shot_id, "time": time.time(), "identity": _window_identity(root),
+        "records": {r["index"]: r for r in records if r["index"] in shown_indices},
+    }
     out = {
         "ok": True,
         "hwnd": root,
@@ -1053,6 +1061,7 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
         # otherwise tell which window it was taken against — a live session asked
         # exactly that. `shot_key` makes it checkable instead of assumed.
         "shot_key": root,
+        "shot_id": shot_id,
         "window_title": title,
         "text": rendered["text"],
         "is_diff": rendered["is_diff"],
@@ -1085,16 +1094,23 @@ def skyshot(hwnd: int, *, disable_diff: bool = False, include_offscreen: bool = 
 
 
 def element_action_at(hwnd: int, index: int, action: str, text: Optional[str] = None,
-                      *, dry_run: bool = False) -> dict:
-    """Act on the element that line `index` of the last skyshot for `hwnd` named."""
+                      *, shot_id: str = "", dry_run: bool = False) -> dict:
+    """Act on a line printed by the shot identified by `shot_id` for `hwnd`."""
     if not _AVAILABLE:
         return {"ok": False, "reason": "uia_unavailable", "error": _IMPORT_ERROR}
+    if not shot_id:
+        return {"ok": False, "reason": "shot_id_required", "action_sent": False,
+                "error": "Pass the shot_id and index from the same tool_skyshot response."}
     key = str(_root_hwnd(hwnd))
     shot = _shots.get(key)
     if shot is None:
         return {"ok": False, "reason": "no_shot", "action_sent": False,
                 "error": (f"no skyshot recorded for window {key}; call skyshot first, "
                           f"then act on one of the indices it printed")}
+    if shot_id != shot["id"]:
+        return {"ok": False, "reason": "stale_shot", "action_sent": False,
+                "error": (f"The shot_id is not the latest skyshot for window {key}. "
+                          "Take a fresh shot and use the index and shot_id from that response.")}
     if time.time() - shot["time"] > _SHOT_TTL_SECONDS:
         return {"ok": False, "reason": "stale_shot", "action_sent": False,
                 "error": (f"the skyshot for window {key} is older than "
@@ -1114,11 +1130,11 @@ def element_action_at(hwnd: int, index: int, action: str, text: Optional[str] = 
                               f"{identity.get('class_name')!r}, now pid "
                               f"{current.get('pid')} / {current.get('class_name')!r}); "
                               f"the shot was discarded — take a fresh one")}
-    record = next((r for r in shot["records"] if r["index"] == index), None)
+    record = shot["records"].get(index)
     if record is None:
         return {"ok": False, "reason": "no_such_index", "action_sent": False,
-                "error": (f"index {index} is not in the last skyshot of window {key} "
-                          f"(it had {len(shot['records'])} lines)")}
+                "error": (f"Index {index} was not printed as an element in this skyshot of window "
+                          f"{key}. Use disable_diff=true to get the full tree.")}
     try:
         payload = describe(record["element"])
     except Exception as exc:
@@ -1128,6 +1144,7 @@ def element_action_at(hwnd: int, index: int, action: str, text: Optional[str] = 
     ref = _register(record["element"], payload)
     out = element_action(ref, action, text, dry_run=dry_run)
     out["index"] = index
+    out["shot_id"] = shot_id
     out["shot_line"] = record["text"]
     return out
 

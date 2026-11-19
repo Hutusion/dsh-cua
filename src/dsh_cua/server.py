@@ -348,7 +348,19 @@ async def tool_read_element(ref: str) -> dict[str, Any]:
         return {"success": False, **res}
     return {"success": True, **res}
 
-@mcp.tool(description="Read a window's UI as a compact TEXT tree instead of a screenshot — far cheaper than an image, and it names elements a hit-test cannot reach (e.g. an input inside a Chromium page, which element_at_point reports only as the enclosing 'document'). Each line is '{index} {indent}{role} {name}{Value: ...}{(state)}'. Every shot after the first is a DIFF against the previous one: unchanged lines are omitted, '~' marks a changed line, '+' an added one, and removed indices are summarised as ranges. So a second call is usually a few lines, not the whole tree — an unchanged window costs about 100 characters. INDEXES ARE POSITIONAL: each shot numbers the tree it just walked, so a number is only valid against the shot that printed it. '~' and '+' lines carry THIS shot's index and may be acted on; unchanged lines carry no index, so reaching one needs disable_diff=true for a full render. An index read from an older shot is not a durable handle — re-check it with a fresh shot before acting if the window may have changed. The result includes shot_key (the window the diff baseline belongs to — the baseline lives server-side and outlives your session, so this is how you confirm it was taken against the window you meant). Pass include_offscreen=true to include elements that are scrolled out or hidden. The result reports `minimized`, because a minimized window does not always expose its full tree (measured on Edge and on Explorer; Notepad was unaffected) — so a small tree is not proof that the window is empty, and include_offscreen does not recover it. Restore the window once and read again if the result matters. NOTE: this reads element VALUES, so the text can contain whatever is on screen in that window. Read-only — no input injection, no focus change; safe to call while the user works.")
+@mcp.tool(description=(
+    "Read a window's accessibility tree as compact text. Each element line is "
+    "'{index} {indent}{role} {name}{Value: ...}{(state)}'. After the first shot, the result "
+    "is a diff by default: '~' shows changed or renumbered elements, '+' shows additions, "
+    "and removed indices refer to the previous shot. Unchanged lines are omitted. "
+    "For tool_element_action_at, pass the returned hwnd and shot_id plus an index printed "
+    "on an element line in this response. Taking another shot of the same window invalidates "
+    "that pair. Pass disable_diff=true to see the full tree and act on an omitted element. "
+    "The shot_key identifies the window, while shot_id identifies this observation. "
+    "Pass include_offscreen=true to include scrolled-out or hidden elements. A minimized "
+    "window may expose only part of its tree; restore the window and read again if needed. "
+    "Element values can contain window content. Read-only: no input injection or focus change."
+))
 async def tool_skyshot(hwnd: int = 0, title: str = "", disable_diff: bool = False,
                        include_offscreen: bool = False, include_values: bool = True,
                        max_nodes: int = 800, max_depth: int = 30) -> dict[str, Any]:
@@ -362,11 +374,20 @@ async def tool_skyshot(hwnd: int = 0, title: str = "", disable_diff: bool = Fals
                       include_values=include_values, max_nodes=max_nodes, max_depth=max_depth)
     return {"success": bool(res.get("ok")), **res}
 
-@mcp.tool(description="Act on the element that line `index` of the last skyshot named. This is the focus-free path for elements element_at_point cannot reach: the tree names the element, so the action goes to it and the window is never raised. MUTATING (soft): serialized across agent sessions; no physical input injected. `action` is one of press, set_value, select, toggle, expand, collapse, scroll_into_view, focus; set_value also needs `text`. Take a fresh skyshot if the UI has changed — a stale index is refused rather than acted on.")
-async def tool_element_action_at(hwnd: int, index: int, action: str, text: str = "") -> dict[str, Any]:
+@mcp.tool(description=(
+    "Act on an element printed by the latest skyshot of a window. Pass hwnd, shot_id and "
+    "the element's printed index from the same tool_skyshot response. A missing or stale "
+    "shot_id or an index omitted from the response is refused before acting. If refused, "
+    "take a fresh full shot with disable_diff=true and use its shot_id and index. "
+    "MUTATING (soft): serialized across agent sessions; no physical input injected. "
+    "Actions: press, set_value, select, toggle, expand, collapse, scroll_into_view, focus. "
+    "set_value also needs text."
+))
+async def tool_element_action_at(hwnd: int, index: int, action: str, text: str = "",
+                                 shot_id: str = "") -> dict[str, Any]:
     if not uia.available().get("available"):
         return {"success": False, "reason": "uia_unavailable", **uia.available()}
-    res = uia.element_action_at(hwnd, index, action, text if text else None)
+    res = uia.element_action_at(hwnd, index, action, text if text else None, shot_id=shot_id)
     return {"success": bool(res.get("ok")), **res}
 
 @mcp.tool(description="Find UI elements by role and/or name substring and return refs that can be acted on with element_action. This is how you reach an element that cannot be hit-tested — the point of naming it is that you no longer need a pixel. `role` is the lowercase role from skyshot (button, edit, document, list_item, ...). At least one filter is required: an unfiltered call would be a tree dump, so use skyshot for that. The result reports `minimized` — a minimized window does not always expose its full tree, so a zero here is not proof that nothing matches. Read-only.")

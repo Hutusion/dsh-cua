@@ -13,7 +13,7 @@ Accessibility first. Screenshots last. Every action is verified, never replayed 
 
 1. **Observe** — `mcp__win32__tool_skyshot` returns the window's UI as a **text tree**. Do not take a
    screenshot to find out what is on screen.
-2. **Act on an element** — `mcp__win32__tool_element_action_at` (by the line index the tree printed)
+2. **Act on an element** — `mcp__win32__tool_element_action_at` (by `shot_id` and the index printed in that shot)
    or `mcp__win32__tool_element_action` (by a `ref` from `tool_find_elements` /
    `tool_element_at_point`). This is the primary path.
 3. **Read the receipt** — `action_sent`, `effect_verified`, `foreground_changed`. See *Receipts* below.
@@ -47,17 +47,16 @@ Renders the control tree as text, one element per line:
 Read it like that: `{index} {indent}{role} {name}{Value: ...}{(state)}`. Indentation is depth.
 `(settable)` means the value can be written; `(focused)` means it holds keyboard focus.
 
-**Every shot after the first is a DIFF** against the previous one — unchanged lines are omitted,
-`~` marks a changed line, `+` an added one, and disappeared indices are summarised as
+**After the first shot, the default is a diff** against the previous one — unchanged lines are omitted,
+`~` marks a changed or renumbered line, `+` an added one, and removed indices from the previous shot are summarised as
 `Removed element IDs: 3-7, 12`. A window that has not changed costs about 100 characters, so
 re-observing is cheap. That is the point of the tool: **a full tree is ~700 characters, a screenshot
 is ~2.4 MB.**
 
-**Indexes are positional: a number is only valid against the shot that printed it.**
-`~` and `+` lines carry the CURRENT tree's index, so you may act on those directly. Unchanged
-lines carry no index — to reach one, take a full render with `disable_diff=true`. An index read
-from an older shot is not a durable handle: if the window may have changed since, re-observe
-before acting, or you will press whatever element now holds that position.
+**Use `hwnd`, `shot_id` and a printed element index from the same response.** The latest observation
+of a window invalidates its previous `shot_id`. `~` and `+` lines contain current indices. If the
+target is omitted or the tool replies `stale_shot`, pass `disable_diff=true` to get a full tree,
+locate the target again and use the new `shot_id` and index.
 
 `shot_key` is the window the diff baseline belongs to — the baseline lives in the server and outlives
 your session, so check it when the answer matters. (`next_index` is a legacy field with no
@@ -99,7 +98,7 @@ false, do not pair them.
 **Prefer the element path.** A UI Automation pattern is delivered to the element itself, so the window
 is never raised, z-order never matters, and the user's focus is not stolen.
 
-- `mcp__win32__tool_element_action_at(hwnd, index, action, text)` — index from a full skyshot.
+- `mcp__win32__tool_element_action_at(hwnd, index, action, shot_id=..., text=...)` — index and `shot_id` from the same skyshot.
 - `mcp__win32__tool_element_action(ref, action, text)` — ref from `find_elements` / `element_at_point`.
 - Actions: `press`, `set_value`, `select`, `toggle`, `expand`, `collapse`, `scroll_into_view`, `focus`.
   Only actions the element actually advertises are accepted; the refusal lists what it does support.
